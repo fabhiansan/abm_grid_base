@@ -1,10 +1,12 @@
+use rand::prelude::*;
+use rand::distr::weighted::WeightedIndex;
+
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum AgentType {
     Child,
     Teen,
     Adult,
     Elder,
-    Car,
 }
 
 #[derive(Debug)]
@@ -28,7 +30,6 @@ impl Agent {
             AgentType::Teen => 1.0 * BASE_SPEED,      // Kecepatan lebih tinggi
             AgentType::Adult => 1.0 * BASE_SPEED,     // Kecepatan sedang 0.75 -> 1.16 m/s 
             AgentType::Elder => 0.7 * BASE_SPEED,     // Kecepatan rendah 0.4 -> 2.5 m/s == 6.25
-            AgentType::Car => 1.0 * 1.68 * 5.0,
         } as u32;
 
         Agent {
@@ -50,16 +51,26 @@ use rand::{rng, thread_rng};
 
 impl AgentType {
     pub fn random() -> Self {
+        let weights = [6.21, 13.41, 59.10, 19.89]; // Distribusi bobot
+
         let variants = [
             AgentType::Child,
             AgentType::Teen,
             AgentType::Adult,
             AgentType::Elder,
-            AgentType::Car,
         ];
         let mut rng = rng();
+        let dist = WeightedIndex::new(&weights).unwrap();
 
-        *variants.choose(&mut rng).unwrap()
+
+        // *variants.choose(&mut rng).unwrap()
+        match dist.sample(&mut rng) {
+            0 => AgentType::Child,
+            1 => AgentType::Teen,
+            2 => AgentType::Adult,
+            3 => AgentType::Elder,
+            _ => AgentType::Adult,
+        }
     }
 }
 

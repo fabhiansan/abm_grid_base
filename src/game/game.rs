@@ -86,32 +86,33 @@ impl Model {
 
                 self.grid.remove_agent(old_x, old_y, id);
 
-                {
-                    let agent = &mut self.agents[id];
-                    let was_on_road = agent.is_on_road;
-                    agent.is_on_road =
-                        self.grid.terrain[new_y as usize][new_x as usize] == Terrain::Road;
+                let agent = &mut self.agents[id];
+                let was_on_road = agent.is_on_road;
+                agent.is_on_road =
+                    self.grid.terrain[new_y as usize][new_x as usize] == Terrain::Road;
 
-                    if !was_on_road && agent.is_on_road {
-                        // println!("Agent {} reached road at ({}, {})", id, new_x, new_y);
-                    }
+                if !was_on_road && agent.is_on_road {
+                    // println!("Agent {} reached road at ({}, {})", id, new_x, new_y);
+                }
 
-                    agent.x = new_x;
-                    agent.y = new_y;
+                agent.x = new_x;
+                agent.y = new_y;
 
-                    if fallback {
-                        if agent.remaining_steps >= 2 {
-                            agent.remaining_steps -= 2;
-                        } else {
-                            agent.remaining_steps = 0;
-                        }
+                if fallback {
+                    if agent.remaining_steps >= 2 {
+                        agent.remaining_steps -= 2;
                     } else {
-                        agent.remaining_steps -= 1;
+                        agent.remaining_steps = 0;
                     }
+                } else {
+                    agent.remaining_steps -= 1;
+                }
 
-                    if self.is_in_shelter(new_x, new_y) {
-                        self.enter_shelter(id, new_x, new_y);
-                    }
+                let in_shelter = self.is_in_shelter(new_x, new_y);
+                if in_shelter {
+                    self.enter_shelter(id, new_x, new_y);
+                    // self.agents.remove(id);
+                    self.grid.remove_agent(new_x, new_y, id);
                 }
 
                 self.grid.add_agent(new_x, new_y, id);
@@ -120,13 +121,17 @@ impl Model {
     }
 
     pub fn is_in_shelter(&self, x: u32, y: u32) -> bool {
-        matches!(self.grid.terrain[y as usize][x as usize], Terrain::Shelter(_))
+        matches!(
+            self.grid.terrain[y as usize][x as usize],
+            Terrain::Shelter(_)
+        )
     }
 
     pub fn enter_shelter(&mut self, agent_id: usize, x: u32, y: u32) {
         if let Terrain::Shelter(shelter_id) = self.grid.terrain[y as usize][x as usize] {
             let agent = &self.agents[agent_id];
-            self.grid.add_to_shelter(shelter_id, agent_id, agent.agent_type);
+            self.grid
+                .add_to_shelter(shelter_id, agent_id, agent.agent_type);
         }
     }
 
@@ -254,31 +259,36 @@ impl Model {
         let filename = "output/shelter_data.json";
 
         let mut shelter_counts: HashMap<String, ShelterAgentCounts> = HashMap::new();
-        
+
         for (&shelter_id, agents) in &self.grid.shelter_agents {
             let shelter_key = format!("shelter_{}", shelter_id);
-            let counts = shelter_counts.entry(shelter_key).or_insert(ShelterAgentCounts::new());
-            
+            let counts = shelter_counts
+                .entry(shelter_key)
+                .or_insert(ShelterAgentCounts::new());
+
             for &(_, agent_type) in agents {
                 match agent_type {
                     AgentType::Child => counts.child += 1,
                     AgentType::Teen => counts.teen += 1,
                     AgentType::Adult => counts.adult += 1,
                     AgentType::Elder => counts.elder += 1,
-                    AgentType::Car => counts.car += 1,
                 }
             }
         }
 
         let current_shelter_data: HashMap<String, serde_json::Value> = shelter_counts
             .iter()
-            .map(|(k, v)| (k.clone(), json!({
-                "child": v.child,
-                "teen": v.teen,
-                "adult": v.adult,
-                "elder": v.elder,
-                "car": v.car
-            })))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    json!({
+                        "child": v.child,
+                        "teen": v.teen,
+                        "adult": v.adult,
+                        "elder": v.elder,
+                    }),
+                )
+            })
             .collect();
 
         let data = json!({
@@ -300,7 +310,6 @@ pub struct ShelterAgentCounts {
     pub teen: u32,
     pub adult: u32,
     pub elder: u32,
-    pub car: u32,
 }
 
 impl ShelterAgentCounts {
@@ -310,7 +319,6 @@ impl ShelterAgentCounts {
             teen: 0,
             adult: 0,
             elder: 0,
-            car: 0,
         }
     }
 
@@ -320,7 +328,6 @@ impl ShelterAgentCounts {
             "teen": self.teen,
             "adult": self.adult,
             "elder": self.elder,
-            "car": self.car,
         })
     }
 }

@@ -2,8 +2,10 @@ use crate::game::agent::{Agent, AgentType};
 use crate::game::State;
 use std::collections::BinaryHeap;
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Terrain {
     Blocked,
     Road,
@@ -26,7 +28,9 @@ pub struct Grid {
     pub distance_to_shelter: Vec<Vec<Option<u32>>>,
     pub shelter_agents: HashMap<u32, Vec<(usize, AgentType)>>,
     pub population: Vec<Vec<u32>>,
-    pub tsunami_data: Vec<Vec<Vec<u32>>>
+    pub tsunami_events: Vec<(u32, u32, u32)>,  // (time_step, x, y)
+    pub nrow: u32,
+    pub ncol: u32
 }
 
 impl Grid {
@@ -157,6 +161,24 @@ impl Grid {
         // Simpan hasil perhitungan ke dalam field distance_to_road
         self.distance_to_road = dist;
     }
+
+    pub fn is_valid_coordinate(&self, x: u32, y: u32) -> bool {
+        x < self.width && y < self.height
+    }
+
+    pub fn get_terrain(&self, x: u32, y: u32) -> Option<&Terrain> {
+        if self.is_valid_coordinate(x, y) {
+            Some(&self.terrain[y as usize][x as usize])
+        } else {
+            None
+        }
+    }
+
+    pub fn is_affected_by_tsunami(&self, time_step: u32, x: u32, y: u32) -> bool {
+        self.tsunami_events.iter().any(|(t, ex, ey)| {
+            *t == time_step && *ex == x && *ey == y
+        })
+    }
 }
 
 pub fn load_grid_from_ascii(
@@ -218,6 +240,14 @@ pub fn load_grid_from_ascii(
         .parse()
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Invalid cellsize value"))?;
 
+    println!("Cellsize: {}", cellsize);
+    println!("Nrows: {}", nrows);
+    println!("Ncols: {}", ncols);
+    println!("xll_line: {}", xll_line);
+    println!("yll_line: {}", yll_line);
+    println!("Xllcorner: {:.10}", xllcorner);
+    println!("Yllcorner: {:.10}", yllcorner);
+
     // Inisialisasi struktur grid sesuai dimensi yang didapatkan dari header
     let mut terrain = vec![vec![Terrain::Blocked; ncols as usize]; nrows as usize];
     let mut shelters = Vec::new();
@@ -248,10 +278,10 @@ pub fn load_grid_from_ascii(
                         ));
                     }
                 }
-                "2" => {
-                    shelters.push((x as u32, y as u32, 0));  // Default shelter ID
-                    Terrain::Shelter(0)
-                }
+                // "2" => {
+                //     shelters.push((x as u32, y as u32, 0));  // Default shelter ID
+                //     Terrain::Shelter(0)
+                // }
                 "3" => {
                     agent_positions.push((x as u32, y as u32, AgentType::Adult));
                     Terrain::Road
@@ -313,11 +343,33 @@ pub fn load_grid_from_ascii(
         shelter_agents: std::collections::HashMap::new(),
         distance_to_road: vec![vec![None; ncols as usize]; nrows as usize],
         population: vec![vec![0; ncols as usize]; nrows as usize],
-        tsunami_data: Vec::new()
+        tsunami_events: Vec::new(),
+        nrow: nrows,
+        ncol: ncols
     };
 
     grid.compute_distance_to_shelters();
     grid.compute_road_distances_from_agents();
+
+    let tsunami_file = File::open(path.replace(".asc", "_tsunami.asc"))?;
+    let tsunami_reader = BufReader::new(tsunami_file);
+
+    // Parse tsunami data as sparse events
+    let mut time_step = 0;
+    for line in tsunami_reader.lines() {
+        let line = line?;
+        if line.starts_with("END") {
+            break;
+        }
+        
+        for (x, value) in line.split_whitespace().enumerate() {
+            let flood_value = value.parse::<u32>().unwrap();
+            if flood_value > 0 {
+                grid.tsunami_events.push((time_step, x as u32, time_step as u32));
+            }
+        }
+        time_step += 1;
+    }
 
     Ok((grid, agents))
 }
