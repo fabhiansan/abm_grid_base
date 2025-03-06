@@ -128,14 +128,16 @@ use std::{fs, path};
 fn main() -> io::Result<()> {
     // Muat grid dan agen dari file ASC
     let (mut grid, mut agents) =
-        load_grid_from_ascii("./data_pacitan/jalandantes2m.asc").expect("Failed to load grid");
+        // load_grid_from_ascii("./data_pacitan/jalandantes2m.asc").expect("Failed to load grid");
+        load_grid_from_ascii("./Jembrana New/jalan/jalantes.asc").expect("Failed to load grid");
 
     println!("grid width : {}, grid height {}", grid.width, grid.height);
 
     let mut next_agent_id = agents.len();
 
     let _ = load_population_and_create_agents(
-        "./data_pacitan/agent2mboundariesjalan_reprojected.asc",
+        // "./data_pacitan/agent2mboundariesjalan_reprojected.asc",
+        "./Jembrana New/agen/agenjembrana.asc",
         grid.width,
         grid.height,
         &mut grid,
@@ -147,7 +149,8 @@ fn main() -> io::Result<()> {
     export_agent_statistics(&agents).expect("Failed to export agent statistics");
     
     let tsunami_data = read_tsunami_data(
-        "./data_pacitan/tsunami_pacitan/tsunami_pacitan_all",
+        // "./data_pacitan/git /tsunami_pacitan_all",
+        "./Jembrana New/tsunami_ascii",
         grid.width,
         grid.height,
     )
@@ -422,7 +425,7 @@ fn read_tsunami_data_file(path: &Path, ncols: u32, nrows: u32) -> io::Result<Vec
             .split_whitespace()
             // .iter()
             .take(ncols as usize)
-            .filter_map(|token| token.parse::<f64>().ok().map(|val| val as u32))
+            .filter_map(|token| token.parse::<f64>().ok().map(|val| val as u32 + 1000))
             .collect();
         tsunami_data.push(row);
     }
@@ -442,7 +445,8 @@ fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<V
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("asc_tsunami_pacitan_") && name.ends_with(".asc"))
+                // .map(|name| name.starts_with("asc_tsunami_pacitan_") && name.ends_with(".asc"))
+                .map(|name| name.ends_with(".asc"))
                 .unwrap_or(false)
         })
         .collect();
@@ -451,7 +455,9 @@ fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<V
     tsunami_files.sort_by_key(|path| {
         path.file_name()
             .and_then(|name| name.to_str())
-            .and_then(|name| name.trim_start_matches("asc_tsunami_pacitan_")
+            .and_then(|name|
+                // 
+                name    
                           .trim_end_matches(".asc")
                           .parse::<u32>()
                           .ok())
