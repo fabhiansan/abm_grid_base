@@ -29,6 +29,7 @@ pub struct Grid {
     pub shelter_agents: HashMap<u32, Vec<(usize, AgentType)>>,
     pub population: Vec<Vec<u32>>,
     pub tsunami_events: Vec<(u32, u32, u32)>,  // (time_step, x, y)
+    pub tsunami_data: Vec<Vec<Vec<u32>>>,  // [timestep][y][x] -> height
     pub nrow: u32,
     pub ncol: u32
 }
@@ -179,6 +180,16 @@ impl Grid {
             *t == time_step && *ex == x && *ey == y
         })
     }
+
+    pub fn get_tsunami_height(&self, tsunami_index: usize, x: u32, y: u32) -> u32 {
+        if tsunami_index < self.tsunami_data.len() &&
+           y < self.tsunami_data[tsunami_index].len() as u32 &&
+           x < self.tsunami_data[tsunami_index][y as usize].len() as u32 {
+            self.tsunami_data[tsunami_index][y as usize][x as usize]
+        } else {
+            0 // No tsunami at this position or invalid coordinates
+        }
+    }
 }
 
 pub fn load_grid_from_ascii(
@@ -301,11 +312,11 @@ pub fn load_grid_from_ascii(
                     agent_positions.push((x as u32, y as u32, AgentType::Elder));
                     Terrain::Road
                 }
-                "7" => {
-                    // Car agent
-                    agent_positions.push((x as u32, y as u32, AgentType::Car));
-                    Terrain::Road
-                }
+                // "7" => {
+                //     // Car agent
+                //     agent_positions.push((x as u32, y as u32, AgentType::Car));
+                //     Terrain::Road
+                // }
                 _ => Terrain::Blocked,
             };
         }
@@ -339,11 +350,12 @@ pub fn load_grid_from_ascii(
         terrain,
         shelters,
         agents_in_cell: vec![vec![Vec::new(); ncols as usize]; nrows as usize],
+        shelter_agents: HashMap::new(),
         distance_to_shelter: vec![vec![None; ncols as usize]; nrows as usize],
-        shelter_agents: std::collections::HashMap::new(),
         distance_to_road: vec![vec![None; ncols as usize]; nrows as usize],
         population: vec![vec![0; ncols as usize]; nrows as usize],
         tsunami_events: Vec::new(),
+        tsunami_data: Vec::new(),
         nrow: nrows,
         ncol: ncols
     };
@@ -351,25 +363,7 @@ pub fn load_grid_from_ascii(
     grid.compute_distance_to_shelters();
     grid.compute_road_distances_from_agents();
 
-    let tsunami_file = File::open(path.replace(".asc", "_tsunami.asc"))?;
-    let tsunami_reader = BufReader::new(tsunami_file);
-
-    // Parse tsunami data as sparse events
-    let mut time_step = 0;
-    for line in tsunami_reader.lines() {
-        let line = line?;
-        if line.starts_with("END") {
-            break;
-        }
-        
-        for (x, value) in line.split_whitespace().enumerate() {
-            let flood_value = value.parse::<u32>().unwrap();
-            if flood_value > 0 {
-                grid.tsunami_events.push((time_step, x as u32, time_step as u32));
-            }
-        }
-        time_step += 1;
-    }
+    grid.tsunami_data = Vec::new();
 
     Ok((grid, agents))
 }

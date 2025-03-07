@@ -20,36 +20,87 @@ impl Model {
         let mut dead_agents_this_step = 0;
 
         if is_tsunami {
-            println!("TSUNAMI IS COMMING ----- {}", tsunami_number);
-            let tsunami_data = self.grid.tsunami_data[tsunami_number].clone();
-
-            for i in (0..self.agents.len()).rev() {
-                let agent = &self.agents[i];
-                if (agent.y as usize) < tsunami_data.len()
-                    && (agent.x as usize) < tsunami_data[0].len()
-                {
-                    let tsunami_height = tsunami_data[agent.y as usize][agent.x as usize];
+            println!("TSUNAMI IS COMING ----- {}", tsunami_number);
+            
+            // Check if tsunami_number is within bounds of tsunami_data
+            if tsunami_number < self.grid.tsunami_data.len() {
+                // Add debug info
+                let total_positive_heights = self.grid.tsunami_data[tsunami_number]
+                    .iter()
+                    .map(|row| row.iter().filter(|&&height| height > 0).count())
+                    .sum::<usize>();
+                
+                println!("Tsunami timestep {} has {} cells with positive height", 
+                         tsunami_number, total_positive_heights);
+                
+                // Print some tsunami height data points
+                if total_positive_heights > 0 {
+                    // Find and print first 5 positions with positive tsunami heights
+                    let mut found_positions = 0;
+                    for (y, row) in self.grid.tsunami_data[tsunami_number].iter().enumerate() {
+                        for (x, &height) in row.iter().enumerate() {
+                            if height > 0 {
+                                println!("Tsunami at position ({}, {}): height {}", x, y, height);
+                                found_positions += 1;
+                                if found_positions >= 5 {
+                                    break;
+                                }
+                            }
+                        }
+                        if found_positions >= 5 {
+                            break;
+                        }
+                    }
+                } else {
+                    println!("WARNING: No positive tsunami heights in this timestep!");
+                }
+                
+                // Print agent position stats
+                let mut min_x = u32::MAX;
+                let mut max_x = 0;
+                let mut min_y = u32::MAX;
+                let mut max_y = 0;
+                
+                for agent in &self.agents {
+                    min_x = min_x.min(agent.x);
+                    max_x = max_x.max(agent.x);
+                    min_y = min_y.min(agent.y);
+                    max_y = max_y.max(agent.y);
+                }
+                
+                println!("Agent position range: x: ({} to {}), y: ({} to {})",
+                         min_x, max_x, min_y, max_y);
+                
+                // Process agents in reverse order to safely remove them
+                for i in (0..self.agents.len()).rev() {
+                    let agent = &self.agents[i];
+                    
+                    // Get tsunami height at agent position
+                    let tsunami_height = self.grid.get_tsunami_height(tsunami_number, agent.x, agent.y);
+                    
+                    // Debug print for first 5 agents
+                    if i < 5 || tsunami_height > 0 {
+                        println!("Agent {} at ({}, {}) - tsunami height: {}", 
+                                 i, agent.x, agent.y, tsunami_height);
+                    }
+                    
+                    // If tsunami height > 0, agent dies
                     if tsunami_height > 0 {
                         dead_agents_this_step += 1;
                         self.grid.remove_agent(agent.x, agent.y, i);
                         println!(
-                            "Agent {} mati akibat tsunami pada koordinat ({}, {})",
-                            i, agent.x, agent.y
+                            "Agent {} mati akibat tsunami pada koordinat ({}, {}) dengan ketinggian air {}",
+                            i, agent.x, agent.y, tsunami_height
                         );
 
                         self.dead_agent_types.push(agent.agent_type);
                         self.agents.remove(i);
                     }
                 }
-            }
-            println!("Jumlah agen mati pada step ini: {}", dead_agents_this_step);
-
-            for row in self.grid.tsunami_data[tsunami_number].iter_mut() {
-                for cell in row.iter_mut() {
-                    if *cell != 0 {
-                        *cell = 10;
-                    }
-                }
+                
+                println!("Jumlah agen mati pada step ini: {}", dead_agents_this_step);
+            } else {
+                println!("Warning: No tsunami data found for tsunami number: {}", tsunami_number);
             }
         }
 

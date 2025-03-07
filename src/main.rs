@@ -6,9 +6,9 @@ use game::grid::{load_grid_from_ascii, Grid, Terrain};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-
-        use std::fs::File;
+use std::fs::File;
 use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize)]
 pub struct ShelterAgentTypeData {
@@ -65,7 +65,7 @@ pub fn export_agent_statistics(agents: &Vec<crate::game::agent::Agent>) -> std::
             crate::game::agent::AgentType::Teen => "Teen",
             crate::game::agent::AgentType::Adult => "Adult",
             crate::game::agent::AgentType::Elder => "Elder",
-            crate::game::agent::AgentType::Car => "Car",
+            // crate::game::agent::AgentType::Car => "Car",
         };
         *stats.agent_types.entry(agent_type.to_string()).or_insert(0) += 1;
     }
@@ -105,7 +105,7 @@ fn write_grid_to_ascii(filename: &str, model: &Model) -> std::io::Result<()> {
                         AgentType::Teen => "4",
                         AgentType::Adult => "5",
                         AgentType::Elder => "6",
-                        AgentType::Car => "7",
+                        // AgentType::Car => "7",
                     }
                     .to_string()
                 } else {
@@ -255,6 +255,8 @@ fn read_tsunami_events(dir_path: &str, grid_width: u32, grid_height: u32) -> io:
             }
         }
     }
+
+    println!("{:?}", events[0]);
     
     Ok(events)
 }
@@ -262,14 +264,14 @@ fn read_tsunami_events(dir_path: &str, grid_width: u32, grid_height: u32) -> io:
 fn main() -> io::Result<()> {
     // Muat grid dan agen dari file ASC
     let (mut grid, mut agents) =
-        load_grid_from_ascii("./19feb/jalantes.asc").expect("Failed to load grid");
+        load_grid_from_ascii("./jalan/jalantes.asc").expect("Failed to load grid");
 
     println!("grid width : {}, grid height {}", grid.width, grid.height);
 
     let mut next_agent_id = agents.len();
 
     let _ = load_population_and_create_agents(
-        "./19feb/agenbener2m.asc",
+        "./agen/agenjembrana.asc",
         grid.width,
         grid.height,
         &mut grid,
@@ -281,15 +283,21 @@ fn main() -> io::Result<()> {
     export_agent_statistics(&agents).expect("Failed to export agent statistics");
 
     println!("Loading tsunami data...");
-    let tsunami_events = read_tsunami_events(
-        "./data_pacitan/tsunami_pacitan/tsunami_pacitan_2/asc",
-        grid.width,
-        grid.height,
-    ).expect("Failed to read tsunami data");
-    
-    let tsunami_len = tsunami_events.len();
-    println!("Loaded {} tsunami events", tsunami_len);
-    grid.tsunami_events = tsunami_events;
+    let tsunami_data = read_tsunami_data("./tsunami_ascii", grid.ncol, grid.nrow)?;
+    println!("Loaded {} tsunami inundation timesteps", tsunami_data.len());
+    let tsunami_len = tsunami_data.len();
+    grid.tsunami_data = tsunami_data; // Assign the loaded tsunami data to grid
+    println!("Tsunami data length: {}", tsunami_len);
+
+    // println!("Loading tsunami inundation data...");
+    // let tsunami_data = read_tsunami_data(
+    //     "./tsunami_ascii/",
+    //     grid.width,
+    //     grid.height,
+    // ).expect("Failed to read tsunami inundation data");
+    // println!("Loaded {} tsunami inundation timesteps", tsunami_data.len());
+    // let tsunami_len = tsunami_data.len();
+    // grid.tsunami_data = tsunami_data;
 
     let mut model = Model {
         grid,
@@ -309,9 +317,9 @@ fn main() -> io::Result<()> {
     let mut current_step = 0;
     let mut index = 0;
     let mut is_playing = true;
+    let mut is_tsunami = false;
 
     while is_playing {
-        let mut is_tsunami = false;
 
         model.step(current_step, is_tsunami, index);
         println!("Step : {} Tsunami Index : {}", current_step, index);
@@ -360,7 +368,7 @@ fn main() -> io::Result<()> {
                                     AgentType::Teen => shelter_agent_type_data.teen += 1,
                                     AgentType::Adult => shelter_agent_type_data.adult += 1,
                                     AgentType::Elder => shelter_agent_type_data.elder += 1,
-                                    AgentType::Car => shelter_agent_type_data.car += 1,
+                                    // AgentType::Car => shelter_agent_type_data.car += 1,
                                 }
                             }
                             shelter_agent_type_data
@@ -385,18 +393,16 @@ fn main() -> io::Result<()> {
             is_tsunami = true;
 
             if current_step % TSUNAMI_SPEED_TIME == 0 && current_step != 0 && is_tsunami {
-                if index >= tsunami_len {
+                if index >= tsunami_len - 1 {
+                    println!("Reached final tsunami index. Ending simulation.");
                     is_playing = false;
-
                     break;
                 }
                 index += 1;
+                println!("Advancing to tsunami index: {}", index);
             }
         }
         current_step += 1;
-        println!("Tsunami events memory: {:.1}KB", 
-            model.grid.tsunami_events.len() as f64 * std::mem::size_of::<(u32,u32,u32)>() as f64 / 1024.0
-        );
     }
 
     // Save shelter data with current dead agents count
@@ -537,9 +543,6 @@ pub fn load_population_from_ascii(path: &str, ncols: u32, nrows: u32) -> io::Res
     Ok(population)
 }
 
-// use std::fs::{self, File};
-use std::path::{Path, PathBuf};
-
 fn read_tsunami_data_file(path: &Path, ncols: u32, nrows: u32) -> io::Result<Vec<Vec<u32>>> {
     let file = File::open(path)?;
     let reader = io::BufReader::new(file);
@@ -558,7 +561,7 @@ fn read_tsunami_data_file(path: &Path, ncols: u32, nrows: u32) -> io::Result<Vec
             .split_whitespace()
             // .iter()
             .take(ncols as usize)
-            .filter_map(|token| token.parse::<f64>().ok().map(|val| val as u32))
+            .filter_map(|token| token.parse::<f64>().ok().map(|val| (val) as u32))
             .collect();
         tsunami_data.push(row);
     }
@@ -578,24 +581,37 @@ fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<V
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                // .map(|name| name.starts_with("asc_tsunami_pacitan_") && name.ends_with(".asc"))
-                .map(|name| name.ends_with(".asc"))
+                .map(|name| name.ends_with("_processed.asc") && !name.ends_with(".asc.aux.xml"))
                 .unwrap_or(false)
         })
         .collect();
+
+    println!("Found {} potential tsunami files", tsunami_files.len());
 
     // Sort files by their numeric index (keep this sequential for correct ordering)
     tsunami_files.sort_by_key(|path| {
         path.file_name()
             .and_then(|name| name.to_str())
             .and_then(|name| {
-                name.trim_start_matches("aav_rep_z_04_")
-                    .trim_end_matches(".asc")
+                name.trim_start_matches("z_07_")
+                    .trim_end_matches("_processed.asc")
                     .parse::<u32>()
                     .ok()
             })
             .unwrap_or(0)
     });
+
+    // Print sorted filenames for debugging
+    println!("First 5 files after sorting:");
+    for (i, file) in tsunami_files.iter().take(5).enumerate() {
+        println!("{}: {:?}", i, file.file_name().unwrap_or_default());
+    }
+    
+    if tsunami_files.len() > 68 {
+        println!("total tsunami len: {}", tsunami_files.len());
+        println!("Warning: Found more than 68 tsunami files. Truncating to the first 67.");
+        tsunami_files.truncate(68);
+    }
 
     // Process tsunami data files in parallel
     let all_tsunami_data: Vec<_> = tsunami_files
@@ -618,5 +634,12 @@ fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<V
         ));
     }
 
+    println!("Loaded {} tsunami data files", all_tsunami_data.len());
+    if !all_tsunami_data.is_empty() {
+        println!("Tsunami grid dimensions: {}x{}", 
+                all_tsunami_data[0].len(), 
+                all_tsunami_data[0][0].len());
+    }
+    
     Ok(all_tsunami_data)
 }
