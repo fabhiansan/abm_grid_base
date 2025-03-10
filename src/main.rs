@@ -1,4 +1,5 @@
 mod game;
+mod api;
 
 use game::agent::{Agent, AgentType};
 use game::game::Model;
@@ -9,8 +10,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::env;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ShelterAgentTypeData {
     pub child: u32,
     pub teen: u32,
@@ -31,6 +33,7 @@ impl Default for ShelterAgentTypeData {
     }
 }
 
+// const TSUNAMI_DELAY: u32 = 100; 
 const TSUNAMI_DELAY: u32 = 30 * 60;
 const TSUNAMI_SPEED_TIME: u32 = 28;
 
@@ -191,10 +194,10 @@ fn export_agents_to_geojson(collector: &AgentDataCollector, filename: &str) -> s
         let coordinates = grouped_data.entry(key).or_insert_with(Vec::new);
 
         // Convert grid coordinates to geographic coordinates
-        // let longitude = agent_data.x as f64 * collector.grid.cellsize + collector.grid.xllcorner;
-        // let latitude = agent_data.y as f64 * collector.grid.cellsize + collector.grid.yllcorner;
+        let x_utm = agent_data.x as f64 * collector.grid.cellsize + collector.grid.xllcorner;
+        let y_utm = agent_data.y as f64 * (-1.0 * collector.grid.cellsize) + collector.grid.yllcorner + (collector.grid.nrow as f64 * collector.grid.cellsize) ;
 
-        coordinates.push(vec![agent_data.x, agent_data.y]);
+        coordinates.push(vec![x_utm, y_utm]);
     }
 
     let features: Vec<Value> = grouped_data
@@ -219,7 +222,7 @@ fn export_agents_to_geojson(collector: &AgentDataCollector, filename: &str) -> s
         "crs": {
             "type": "name",
             "properties": {
-                "name": "EPSG:4326"
+                "name": "EPSG:32749"
             }
         },
         "features": features
@@ -262,16 +265,45 @@ fn read_tsunami_events(dir_path: &str, grid_width: u32, grid_height: u32) -> io:
 }
 
 fn main() -> io::Result<()> {
+    // Parse command line arguments
+    let args: Vec<String> = env::args().collect();
+    
+    // If first argument is "api", start API server
+    if args.len() > 1 && args[1] == "api" {
+        // Get port from arguments or use default
+        let port = if args.len() > 2 {
+            args[2].parse::<u16>().unwrap_or(8080)
+        } else {
+            8080
+        };
+        
+        // Start API server
+        return tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(api::start_api_server(port));
+    }
+    
+    // Otherwise, run simulation directly
+    
+    // Get default config location
+    let config = api::SimulationConfig::default();
+    let (grid_path, population_path, tsunami_data_path) = config.get_location_paths();
+    
+    println!("Using location: {}", config.location);
+    println!("Grid path: {}", grid_path);
+    println!("Population path: {}", population_path);
+    println!("Tsunami data path: {}", tsunami_data_path);
+
     // Muat grid dan agen dari file ASC
     let (mut grid, mut agents) =
-        load_grid_from_ascii("./jalan/jalantes.asc").expect("Failed to load grid");
+        load_grid_from_ascii(&grid_path).expect("Failed to load grid");
 
     println!("grid width : {}, grid height {}", grid.width, grid.height);
 
     let mut next_agent_id = agents.len();
 
     let _ = load_population_and_create_agents(
-        "./agen/agenjembrana.asc",
+        &population_path,
         grid.width,
         grid.height,
         &mut grid,
@@ -283,7 +315,7 @@ fn main() -> io::Result<()> {
     export_agent_statistics(&agents).expect("Failed to export agent statistics");
 
     println!("Loading tsunami data...");
-    let tsunami_data = read_tsunami_data("./tsunami_ascii", grid.ncol, grid.nrow)?;
+    let tsunami_data = read_tsunami_data(&tsunami_data_path, grid.ncol, grid.nrow)?;
     println!("Loaded {} tsunami inundation timesteps", tsunami_data.len());
     let tsunami_len = tsunami_data.len();
     grid.tsunami_data = tsunami_data; // Assign the loaded tsunami data to grid
@@ -414,7 +446,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct DeadAgentTypeData {
     pub child: u32,
     pub teen: u32,
@@ -422,6 +454,19 @@ pub struct DeadAgentTypeData {
     pub elder: u32,
     pub car: u32,
     pub total: u32,
+}
+
+impl Default for DeadAgentTypeData {
+    fn default() -> Self {
+        DeadAgentTypeData {
+            child: 0,
+            teen: 0,
+            adult: 0,
+            elder: 0,
+            car: 0,
+            total: 0,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -548,20 +593,62 @@ fn read_tsunami_data_file(path: &Path, ncols: u32, nrows: u32) -> io::Result<Vec
     let reader = io::BufReader::new(file);
     let mut lines = reader.lines();
 
-    // Skip header lines
+    // Determine the location based on the file path
+    let is_pacitan = path.to_string_lossy().contains("pacitan");
+    
+    // Look for NODATA_value in the header
+    let mut nodata_value: Option<f64> = None;
+    
+    // Read the headers
+    let mut header_lines = Vec::new();
     for _ in 0..6 {
-        lines.next();
+        if let Some(Ok(line)) = lines.next() {
+            // Try to extract NODATA_value from the header if present
+            if line.contains("NODATA_value") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(val) = parts[parts.len() - 1].parse::<f64>() {
+                        nodata_value = Some(val);
+                    }
+                }
+            }
+            header_lines.push(line);
+        }
     }
-
+    
+    // If NODATA_value was not found in the header, set default based on the location
+    if nodata_value.is_none() {
+        nodata_value = if is_pacitan { Some(0.0) } else { Some(-9999.0) };
+    }
+    
+    // Print debug information without too much spam
+    if is_pacitan {
+        println!("Processing Pacitan tsunami file: {:?} with NODATA_value: {:?}", 
+                 path.file_name().unwrap_or_default(), nodata_value);
+    }
+    
     let mut tsunami_data = Vec::new();
 
     for line in lines {
         let line = line?;
         let row: Vec<u32> = line
             .split_whitespace()
-            // .iter()
             .take(ncols as usize)
-            .filter_map(|token| token.parse::<f64>().ok().map(|val| (val) as u32))
+            .filter_map(|token| {
+                token.parse::<f64>().ok().map(|val| {
+                    // If the value matches NODATA_value, it means NO tsunami (height 0)
+                    // Otherwise keep the non-negative height value as is
+                    if let Some(nodata) = nodata_value {
+                        if (val - nodata).abs() < 0.001 {
+                            0 // No tsunami
+                        } else {
+                            val.max(0.0) as u32 // Keep positive tsunami heights
+                        }
+                    } else {
+                        val.max(0.0) as u32 // Fallback, ensure non-negative
+                    }
+                })
+            })
             .collect();
         tsunami_data.push(row);
     }
@@ -575,46 +662,113 @@ fn read_tsunami_data_file(path: &Path, ncols: u32, nrows: u32) -> io::Result<Vec
 }
 
 fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<Vec<Vec<u32>>>> {
+    // Determine which location we're using based on the directory path
+    let is_pacitan = dir_path.contains("pacitan");
+    
+    // Define file patterns based on location
+    let filter_pattern = if is_pacitan {
+        // Pacitan files use pattern: aav_rep_z_04_XXXXXX.asc
+        |name: &str| name.contains("aav_rep_z_04_") && name.ends_with(".asc") && !name.ends_with(".asc.aux.xml")
+    } else {
+        // Jembrana files use pattern: z_07_XXXXXX_processed.asc
+        |name: &str| name.ends_with("_processed.asc") && !name.ends_with(".asc.aux.xml")
+    };
+    
+    // Get tsunami files using the appropriate pattern
     let mut tsunami_files: Vec<PathBuf> = fs::read_dir(dir_path)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.ends_with("_processed.asc") && !name.ends_with(".asc.aux.xml"))
+                .map(filter_pattern)
                 .unwrap_or(false)
         })
         .collect();
 
     println!("Found {} potential tsunami files", tsunami_files.len());
-
+    
     // Sort files by their numeric index (keep this sequential for correct ordering)
     tsunami_files.sort_by_key(|path| {
         path.file_name()
             .and_then(|name| name.to_str())
             .and_then(|name| {
-                name.trim_start_matches("z_07_")
-                    .trim_end_matches("_processed.asc")
-                    .parse::<u32>()
-                    .ok()
+                if is_pacitan {
+                    // Extract number from Pacitan format: aav_rep_z_04_000000.asc
+                    name.trim_start_matches("aav_rep_z_04_")
+                        .trim_end_matches(".asc")
+                        .parse::<u32>()
+                        .ok()
+                } else {
+                    // Extract number from Jembrana format: z_07_000000_processed.asc
+                    name.trim_start_matches("z_07_")
+                        .trim_end_matches("_processed.asc")
+                        .parse::<u32>()
+                        .ok()
+                }
             })
             .unwrap_or(0)
     });
 
-    // Print sorted filenames for debugging
+    // Print the first few sorted files for debugging
     println!("First 5 files after sorting:");
     for (i, file) in tsunami_files.iter().take(5).enumerate() {
         println!("{}: {:?}", i, file.file_name().unwrap_or_default());
     }
     
-    if tsunami_files.len() > 68 {
-        println!("total tsunami len: {}", tsunami_files.len());
-        println!("Warning: Found more than 68 tsunami files. Truncating to the first 67.");
-        tsunami_files.truncate(68);
+    // Select specific files based on location
+    let selected_files = if is_pacitan {
+        // For Pacitan, use a simpler approach by skipping 3 files at a time (each file is +7)
+        // This will give us files at intervals of 0, 28, 56, 84, 112, etc.
+        
+        // Sort tsunami files by their numeric index
+        let mut indexed_files: Vec<(u32, PathBuf)> = tsunami_files.iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| {
+                        name.trim_start_matches("aav_rep_z_04_")
+                            .trim_end_matches(".asc")
+                            .parse::<u32>()
+                            .ok()
+                            .map(|num| (num, path.clone()))
+                    })
+            })
+            .collect();
+        
+        // Sort files by their index
+        indexed_files.sort_by_key(|(idx, _)| *idx);
+        
+        // Select every 4th file (skipping 3 files each time)
+        let mut selected = Vec::new();
+        for i in (0..indexed_files.len()).step_by(4) {
+            let (idx, file) = &indexed_files[i];
+            println!("Selected tsunami file with index {}", idx);
+            selected.push(file.clone());
+        }
+        
+        println!("Selected {} tsunami files for Pacitan at intervals of 0, 28, 56, ...", selected.len());
+        selected
+    } else {
+        // For Jembrana, use all files (up to 68 as before)
+        if tsunami_files.len() > 68 {
+            println!("total tsunami len: {}", tsunami_files.len());
+            println!("Warning: Found more than 68 tsunami files. Truncating to the first 68.");
+            tsunami_files.truncate(68);
+        }
+        tsunami_files
+    };
+    
+    println!("Selected {} tsunami files for processing", selected_files.len());
+    if selected_files.len() > 0 && selected_files.len() <= 5 {
+        println!("Selected files:");
+        for (i, file) in selected_files.iter().enumerate() {
+            println!("{}: {:?}", i, file.file_name().unwrap_or_default());
+        }
     }
 
     // Process tsunami data files in parallel
-    let all_tsunami_data: Vec<_> = tsunami_files
+    let all_tsunami_data: Vec<_> = selected_files
         .par_iter()
         .filter_map(
             |file_path| match read_tsunami_data_file(file_path, ncols, nrows) {

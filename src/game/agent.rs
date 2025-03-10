@@ -1,5 +1,6 @@
 use rand::prelude::*;
 use rand::distr::weighted::WeightedIndex;
+use std::fmt;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum AgentType {
@@ -9,7 +10,19 @@ pub enum AgentType {
     Elder,
 }
 
-#[derive(Debug)]
+// Implement Display for AgentType so we can use to_string()
+impl fmt::Display for AgentType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AgentType::Child => write!(f, "Child"),
+            AgentType::Teen => write!(f, "Teen"),
+            AgentType::Adult => write!(f, "Adult"),
+            AgentType::Elder => write!(f, "Elder"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Agent {
     pub id: usize,
     pub x: u32,

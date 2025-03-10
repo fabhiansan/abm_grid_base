@@ -8,6 +8,7 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 
+#[derive(Clone)]
 pub struct Model {
     pub grid: Grid,
     pub agents: Vec<Agent>,
