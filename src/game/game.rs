@@ -109,38 +109,48 @@ impl Model {
 
         let mut rng = thread_rng(); // Keep using imported thread_rng as it's common practice
 
-        // --- Trigger and Decision Logic ---
-        // Agents only consider reacting *after* the agent_reaction_delay
+        // --- Trigger, Milling, and Decision Logic ---
         if current_step >= agent_reaction_delay {
             for agent in &mut self.agents {
-                 // Agent must be alive to react
-                 if !agent.is_alive { continue; }
-
-                // Trigger condition: Agent reacts *only* based on agent_reaction_delay,
-                // simulating a warning or independent decision time.
-                let should_consider_evacuating = current_step >= agent_reaction_delay;
+                 if !agent.is_alive { continue; } // Skip dead agents
 
                 // Trigger: Mark when agent *could* start reacting (if not already triggered)
-                // This time is now independent of the actual tsunami arrival.
-                if should_consider_evacuating && agent.evacuation_trigger_time.is_none() {
+                if agent.evacuation_trigger_time.is_none() {
                     agent.evacuation_trigger_time = Some(current_step); // Record the step they *could* react
+
+                    // --- Assign Milling Time based on household_size ---
+                    const BASE_MILLING_DELAY: u32 = 15; // Base delay
+                    const EXTRA_MILLING_PER_MEMBER: u32 = 10; // Extra delay per member > 1
+                    let extra_delay = agent.household_size.saturating_sub(1) as u32 * EXTRA_MILLING_PER_MEMBER;
+                    agent.milling_steps_remaining = BASE_MILLING_DELAY + extra_delay;
+                    // println!("Agent {} triggered, assigned milling time: {}", agent.id, agent.milling_steps_remaining); // Debug
                 }
 
-                // Decision: Decide once, only after the reaction delay has passed.
-                if agent.evacuation_trigger_time.is_some() && !agent.has_decided_to_evacuate {
-                    // The decision logic itself remains the same (based on probability)
+                // Milling Countdown: If triggered and milling, decrement counter.
+                // Agent does not decide or move while milling.
+                if agent.milling_steps_remaining > 0 {
+                    agent.milling_steps_remaining -= 1;
+                    continue; // Skip decision and movement for this agent this step
+                }
+
+                // Decision: Decide once, only after reaction delay AND milling time is over.
+                if agent.evacuation_trigger_time.is_some() && agent.milling_steps_remaining == 0 && !agent.has_decided_to_evacuate {
                     let knowledge_factor = agent.knowledge_level as f32 / 100.0;
                     let household_factor = 1.0 - ((agent.household_size.saturating_sub(1)) as f32 * 0.05);
                     let evacuation_probability = (knowledge_factor * household_factor).clamp(0.0, 1.0);
 
-                    // Use gen_bool for probability check - warning suggests random_bool, but gen_bool is correct for probability
                     if rng.gen_bool(evacuation_probability as f64) {
                         agent.has_decided_to_evacuate = true;
+                        // println!("Agent {} decided to evacuate (Prob: {:.2})", agent.id, evacuation_probability); // Debug
+                    } else {
+                        // Agent decided NOT to evacuate (for now, maybe reconsider later?)
+                        // println!("Agent {} decided NOT to evacuate (Prob: {:.2})", agent.id, evacuation_probability); // Debug
+                        // Consider adding logic here if agents might reconsider later
                     }
                 }
             }
         }
-        // --- End Trigger and Decision Logic ---
+        // --- End Trigger, Milling, and Decision Logic ---
 
 
         let mut agent_order: Vec<usize> = (0..self.agents.len()).collect();
@@ -153,8 +163,9 @@ impl Model {
         }
 
         // --- Movement Loop ---
+        // Filter agents who are alive, have decided, AND finished milling
         let max_steps_needed = self.agents.iter()
-                                .filter(|a| a.is_alive && a.has_decided_to_evacuate)
+                                .filter(|a| a.is_alive && a.has_decided_to_evacuate && a.milling_steps_remaining == 0)
                                 .map(|a| a.speed)
                                 .max()
                                 .unwrap_or(0);
@@ -168,12 +179,20 @@ impl Model {
                 if agent_index >= self.agents.len() { continue; }
                 let agent = &self.agents[agent_index];
 
-                if agent.is_alive && agent.has_decided_to_evacuate && agent.remaining_steps > 0 && !self.is_in_shelter(agent.x, agent.y) {
+                // --- Movement Modification ---
+                // Only move if agent is alive, has decided, finished milling, has steps left, and not in shelter
+                if agent.is_alive
+                   && agent.has_decided_to_evacuate
+                   && agent.milling_steps_remaining == 0 // Check milling is done
+                   && agent.remaining_steps > 0
+                   && !self.is_in_shelter(agent.x, agent.y)
+                {
                     if let Some((nx, ny, fallback)) = self.find_best_move(agent, &reserved_cells) {
                         reserved_cells.insert((nx, ny));
                         moves.push((agent_index, nx, ny, fallback));
                     }
                 }
+                // --- End Movement Modification ---
             }
 
             const UPHILL_SPEED_PENALTY_FACTOR: f64 = 0.5;

@@ -40,6 +40,8 @@ pub struct Agent {
     // --- Added based on Paper 2 ---
     pub evacuation_trigger_time: Option<u32>, // Step when triggered
     pub is_in_shelter: bool, // Flag to indicate if agent is currently in a shelter cell
+    // --- Added for Milling Time (Paper 4) ---
+    pub milling_steps_remaining: u32, // Steps remaining for pre-evacuation delay/milling
 }
 
 pub const BASE_SPEED: f64 = 2.66;
@@ -69,6 +71,7 @@ impl Agent {
             has_decided_to_evacuate: false, // Start undecided
             evacuation_trigger_time: None, // Not triggered initially
             is_in_shelter: false, // Start outside shelter
+            milling_steps_remaining: 0, // Start with no milling delay active
         }
     }
 }
