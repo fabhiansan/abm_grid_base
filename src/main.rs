@@ -34,8 +34,9 @@ impl Default for ShelterAgentTypeData {
 }
 
 // const TSUNAMI_DELAY: u32 = 100; 
-const TSUNAMI_DELAY: u32 = 30 * 60;
-const TSUNAMI_SPEED_TIME: u32 = 28;
+// const TSUNAMI_DELAY: u32 = 30 * 60;
+const TSUNAMI_DELAY: u32 = 5;
+const TSUNAMI_SPEED_TIME: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 pub struct ShelterData {
@@ -117,7 +118,8 @@ fn write_grid_to_ascii(filename: &str, model: &Model) -> std::io::Result<()> {
                 }
             } else {
                 match model.grid.terrain[y][x] {
-                    Terrain::Blocked => "0".to_string(),
+                    Terrain::Land => "0".to_string(), // Explicitly handle Land as 0
+                    Terrain::Blocked => "0".to_string(), // Keep Blocked as 0 for now (or choose another NODATA value if needed)
                     Terrain::Road => "1".to_string(),
                     Terrain::Shelter(id) => format!("20{:02}", id),
                 }
@@ -516,9 +518,7 @@ pub fn load_population_and_create_agents(
         ));
     }
 
-    // Simpan data populasi ke grid (jika grid memiliki field population)
-    grid.population = population.clone();
-
+    // grid.population field removed from Grid struct, so assignment is removed.
     // Iterasi data populasi dan tambahkan agen untuk setiap unit populasi
     for (y, row) in population.iter().enumerate() {
         for (x, &pop) in row.iter().enumerate() {
@@ -662,15 +662,22 @@ fn read_tsunami_data_file(path: &Path, ncols: u32, nrows: u32) -> io::Result<Vec
 }
 
 fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<Vec<Vec<u32>>>> {
-    // Determine which location we're using based on the directory path
+    // Determine which location/data type we're using based on the directory path
     let is_pacitan = dir_path.contains("pacitan");
-    
-    // Define file patterns based on location
+    let is_sample = dir_path.contains("data_sample/tsunami_ascii_sample"); // Check for sample path
+
+    // Define file patterns based on location/type
     let filter_pattern = if is_pacitan {
+        // log::debug!("Using Pacitan filter pattern for path: {}", dir_path);
         // Pacitan files use pattern: aav_rep_z_04_XXXXXX.asc
         |name: &str| name.contains("aav_rep_z_04_") && name.ends_with(".asc") && !name.ends_with(".asc.aux.xml")
+    } else if is_sample {
+        // log::debug!("Using Sample filter pattern for path: {}", dir_path);
+        // Sample files use pattern: tsunami_XXX.asc
+        |name: &str| name.starts_with("tsunami_") && name.ends_with(".asc") && !name.ends_with(".asc.aux.xml")
     } else {
-        // Jembrana files use pattern: z_07_XXXXXX_processed.asc
+        // log::debug!("Using default (Jembrana-like) filter pattern for path: {}", dir_path);
+        // Default (Jembrana) files use pattern: z_07_XXXXXX_processed.asc
         |name: &str| name.ends_with("_processed.asc") && !name.ends_with(".asc.aux.xml")
     };
     
@@ -696,6 +703,12 @@ fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<V
                 if is_pacitan {
                     // Extract number from Pacitan format: aav_rep_z_04_000000.asc
                     name.trim_start_matches("aav_rep_z_04_")
+                        .trim_end_matches(".asc")
+                        .parse::<u32>()
+                        .ok()
+                } else if is_sample {
+                     // Extract number from Sample format: tsunami_000.asc
+                     name.trim_start_matches("tsunami_")
                         .trim_end_matches(".asc")
                         .parse::<u32>()
                         .ok()

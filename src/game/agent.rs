@@ -31,7 +31,13 @@ pub struct Agent {
     pub remaining_steps: u32,
     pub is_on_road: bool,
     pub agent_type: AgentType,
-    pub is_alive: bool
+    pub is_alive: bool,
+    // --- Added based on Paper 3 ---
+    pub knowledge_level: u8, // Represents disaster knowledge (0-100)
+    pub household_size: u8, // Simplified household size
+    pub has_decided_to_evacuate: bool, // Flag for evacuation decision
+    // --- Added based on Paper 2 ---
+    pub evacuation_trigger_time: Option<u32>, // Step when triggered
 }
 
 pub const BASE_SPEED: f64 = 2.66;
@@ -53,7 +59,12 @@ impl Agent {
             remaining_steps: speed,
             is_on_road,
             agent_type,
-            is_alive: true
+            is_alive: true,
+            // --- Initialize new fields ---
+            knowledge_level: thread_rng().gen_range(10..=90), // Random knowledge for now
+            household_size: thread_rng().gen_range(1..=5), // Random household size 1-5
+            has_decided_to_evacuate: false, // Start undecided
+            evacuation_trigger_time: None, // Not triggered initially
         }
     }
 }
@@ -89,8 +100,20 @@ impl AgentType {
 
 
 use serde::{Serialize, Deserialize};
-#[derive(Serialize, Deserialize)]
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum TransportMode {
+    Walk,
+    Car,
+}
+
+impl Default for TransportMode {
+    fn default() -> Self {
+        TransportMode::Walk
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DeadAgentsData {
     pub step: u32,
     pub dead_agents: usize,

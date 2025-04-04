@@ -1,18 +1,19 @@
 use crate::game::agent::{Agent, AgentType};
-use crate::game::State;
-use std::collections::BinaryHeap;
-use std::collections::{HashMap, VecDeque};
+use crate::game::State; // Assuming State is defined elsewhere, maybe in game::mod.rs?
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque}; // Added HashSet
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
+use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Terrain {
+    Land, // Represents traversable non-road/shelter terrain
     Blocked,
     Road,
-    Shelter(u32),  // Now includes shelter ID
+    Shelter(u32), // Includes shelter ID
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)] // Removed PartialEq as HashMap<String, Vec<Vec<f64>>> doesn't derive it easily
 pub struct Grid {
     pub width: u32,
     pub height: u32,
@@ -20,35 +21,46 @@ pub struct Grid {
     pub yllcorner: f64,
     pub cellsize: f64,
     pub terrain: Vec<Vec<Terrain>>,
-    pub shelters: Vec<(u32, u32, u32)>,  // (x, y, shelter_id)
-
+    pub shelters: Vec<(u32, u32, u32)>, // (x, y, shelter_id)
     pub agents_in_cell: Vec<Vec<Vec<usize>>>,
-    // Jarak ke jalan/shelter sudah dihitung sebelumnya
-    pub distance_to_road: Vec<Vec<Option<u32>>>,
-    pub distance_to_shelter: Vec<Vec<Option<u32>>>,
+    // Changed distance fields to f64 for weighted costs
+    pub distance_to_road: Vec<Vec<Option<f64>>>,
+    pub distance_to_shelter: Vec<Vec<Option<f64>>>,
     pub shelter_agents: HashMap<u32, Vec<(usize, AgentType)>>,
-    pub population: Vec<Vec<u32>>,
-    pub tsunami_events: Vec<(u32, u32, u32)>,  // (time_step, x, y)
-    pub tsunami_data: Vec<Vec<Vec<u32>>>,  // [timestep][y][x] -> height
-    pub nrow: u32,
-    pub ncol: u32
+    pub tsunami_data: Vec<Vec<Vec<u32>>>, // [timestep][y][x] -> height
+    pub nrow: u32, // Redundant with height? Keep for consistency with ASC header names
+    pub ncol: u32, // Redundant with width? Keep for consistency
+    // Added environment_layers field
+    pub environment_layers: HashMap<String, Vec<Vec<f64>>>,
 }
 
 impl Grid {
+    // Updated Grid::new
+    pub fn new(width: u32, height: u32, xllcorner: f64, yllcorner: f64, cellsize: f64, ncol: u32, nrow: u32) -> Self {
+        Grid {
+            width,
+            height,
+            xllcorner,
+            yllcorner,
+            cellsize,
+            terrain: vec![vec![Terrain::Blocked; width as usize]; height as usize], // Initialize terrain here
+            shelters: Vec::new(), // Initialize shelters
+            agents_in_cell: vec![vec![Vec::new(); width as usize]; height as usize],
+            distance_to_road: vec![vec![None; width as usize]; height as usize],
+            distance_to_shelter: vec![vec![None; width as usize]; height as usize],
+            shelter_agents: HashMap::new(),
+            tsunami_data: Vec::new(),
+            nrow, // Keep nrow
+            ncol, // Keep ncol
+            environment_layers: HashMap::new(), // Initialize empty env layers map
+        }
+    }
+
     pub fn remove_agent(&mut self, x: u32, y: u32, agent_id: usize) {
-        // let cell = &mut self.agents_in_cell[y as usize][x as usize];
-        // if let Some(pos) = cell.iter().position(|&id| id == agent_id) {
-        //     cell.remove(pos);
-        // }
         let y_usize = y as usize;
         let x_usize = x as usize;
-
         if y_usize < self.agents_in_cell.len() && x_usize < self.agents_in_cell[y_usize].len() {
-            // Cari posisi ID agen di sel dan hapus jika ditemukan
-            if let Some(index) = self.agents_in_cell[y_usize][x_usize]
-                .iter()
-                .position(|&id| id == agent_id)
-            {
+            if let Some(index) = self.agents_in_cell[y_usize][x_usize].iter().position(|&id| id == agent_id) {
                 self.agents_in_cell[y_usize][x_usize].remove(index);
             }
         }
@@ -57,111 +69,182 @@ impl Grid {
     pub fn add_to_shelter(&mut self, shelter_id: u32, agent_id: usize, agent_type: AgentType) {
         self.shelter_agents
             .entry(shelter_id)
-            .or_insert(Vec::new())
+            .or_insert_with(Vec::new)
             .push((agent_id, agent_type));
     }
 
     pub fn add_agent(&mut self, x: u32, y: u32, agent_id: usize) {
-        self.agents_in_cell[y as usize][x as usize].push(agent_id);
+         let y_usize = y as usize;
+         let x_usize = x as usize;
+         if y_usize < self.agents_in_cell.len() && x_usize < self.agents_in_cell[y_usize].len() {
+            self.agents_in_cell[y_usize][x_usize].push(agent_id);
+         } else {
+             eprintln!("Warning: Attempted to add agent {} to invalid cell ({}, {})", agent_id, x, y);
+         }
     }
 
-    pub fn compute_distance_to_shelters(&mut self) {
-        let mut queue = VecDeque::new();
-        let mut visited = vec![vec![false; self.width as usize]; self.height as usize];
+    // --- Distance Calculation Functions ---
 
-        // Inisialisasi semua shelter dengan jarak 0
+    // Updated compute_distance_to_shelters to accept use_dtm flag
+    pub fn compute_distance_to_shelters(&mut self, use_dtm: bool) {
+        let mut dist = vec![vec![None; self.width as usize]; self.height as usize];
+        let mut heap = BinaryHeap::new();
+        const SQRT2: f64 = 1.41421356237; // Precompute sqrt(2)
+
+        // Initialize shelters with cost 0
         for &(x, y, _) in &self.shelters {
             let x = x as usize;
             let y = y as usize;
-            self.distance_to_shelter[y][x] = Some(0);
-            queue.push_back((x, y));
-            visited[y][x] = true;
+            if y < dist.len() && x < dist[y].len() { // Bounds check
+                dist[y][x] = Some(0.0);
+                heap.push(State { cost: 0.0, x: x as u32, y: y as u32 });
+            }
         }
 
-        let dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)];
+        let dtm = self.environment_layers.get("dtm"); // Get DTM layer if loaded
 
-        while let Some((x, y)) = queue.pop_front() {
-            let current_dist = self.distance_to_shelter[y][x].unwrap();
+        while let Some(State { cost, x, y }) = heap.pop() {
+            let x_usize = x as usize;
+            let y_usize = y as usize;
 
-            for &(dx, dy) in &dirs {
-                let nx = (x as i32) + dx;
-                let ny = (y as i32) + dy;
+            if let Some(current_cost) = dist[y_usize][x_usize] {
+                 // Use total_cmp for robust f64 comparison
+                if cost.total_cmp(&current_cost) == std::cmp::Ordering::Greater { continue; }
+            }
 
-                if nx >= 0 && ny >= 0 && nx < self.width as i32 && ny < self.height as i32 {
-                    let nx = nx as usize;
-                    let ny = ny as usize;
+            // Iterate through 8 neighbors
+            for &(dx, dy) in &[ (0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1) ] {
+                let nx_i = x as i32 + dx;
+                let ny_i = y as i32 + dy;
 
-                    if !visited[ny][nx] && self.terrain[ny][nx] != Terrain::Blocked {
-                        visited[ny][nx] = true;
-                        self.distance_to_shelter[ny][nx] = Some(current_dist + 1);
-                        queue.push_back((nx, ny));
+                if nx_i >= 0 && ny_i >= 0 && nx_i < self.width as i32 && ny_i < self.height as i32 {
+                    let nx_usize = nx_i as usize;
+                    let ny_usize = ny_i as usize;
+
+                    // Skip blocked terrain
+                    if self.terrain[ny_usize][nx_usize] == Terrain::Blocked { continue; }
+
+                    // --- Calculate Move Cost based on Slope (conditionally) ---
+                    let delta_d = if dx == 0 || dy == 0 { self.cellsize } else { self.cellsize * SQRT2 };
+
+                    let move_cost = if use_dtm && dtm.is_some() { // Check flag AND DTM existence
+                        let dtm_layer = dtm.unwrap(); // Safe to unwrap due to is_some() check
+                        let current_elev = dtm_layer.get(y_usize).and_then(|row| row.get(x_usize)).copied().unwrap_or(0.0);
+                        let next_elev = dtm_layer.get(ny_usize).and_then(|row| row.get(nx_usize)).copied().unwrap_or(0.0);
+                        let delta_z = next_elev - current_elev;
+                        let slope = if delta_d > 1e-6 { delta_z / delta_d } else { 0.0 };
+
+                        // Slope Cost Factor: Exponential penalty for uphill, capped
+                        let slope_factor = if slope > 0.0 {
+                            let capped_exp_arg = (slope * 5.0).min(10.0);
+                            1.0 + capped_exp_arg.exp() - 1.0
+                        } else {
+                            1.0
+                        };
+                        delta_d * slope_factor // Apply slope factor
+                    } else {
+                        delta_d // Simple distance if use_dtm is false or DTM not loaded
+                    };
+                    // --- End Cost Calculation ---
+
+                    let next_total_cost = cost + move_cost;
+
+                    if dist[ny_usize][nx_usize].is_none() || next_total_cost < dist[ny_usize][nx_usize].unwrap() {
+                        dist[ny_usize][nx_usize] = Some(next_total_cost);
+                        heap.push(State { cost: next_total_cost, x: nx_i as u32, y: ny_i as u32 });
                     }
                 }
             }
         }
+        self.distance_to_shelter = dist;
+        if use_dtm && dtm.is_some() {
+            println!("Computed distance to shelters (Least Cost Path using DTM slope).");
+        } else {
+            println!("Computed distance to shelters (Simple Distance Path).");
+        }
     }
 
-    pub fn compute_road_distances_from_agents(&mut self) {
-        // Buat matriks jarak, inisialisasi dengan None
+    // Updated compute_distance_to_road to accept use_dtm flag
+    pub fn compute_distance_to_road(&mut self, use_dtm: bool) {
         let mut dist = vec![vec![None; self.width as usize]; self.height as usize];
         let mut heap = BinaryHeap::new();
+        const SQRT2: f64 = 1.41421356237;
 
-        // Inisialisasi: semua sel Road diberi jarak 0 dan dimasukkan ke dalam heap.
+        // Initialize road cells with cost 0
         for y in 0..self.height as usize {
             for x in 0..self.width as usize {
                 if self.terrain[y][x] == Terrain::Road {
-                    dist[y][x] = Some(0);
-                    heap.push(State {
-                        cost: 0,
-                        x: x as u32,
-                        y: y as u32,
-                    });
+                    dist[y][x] = Some(0.0);
+                    heap.push(State { cost: 0.0, x: x as u32, y: y as u32 });
                 }
             }
         }
 
-        let dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)];
+        let dtm = self.environment_layers.get("dtm");
 
-        // Lakukan Dijkstra untuk menyebarkan jarak ke seluruh sel.
         while let Some(State { cost, x, y }) = heap.pop() {
-            // Jika nilai cost di state sekarang sudah lebih besar daripada yang tersimpan, lewati.
-            if let Some(current) = dist[y as usize][x as usize] {
-                if cost > current {
-                    continue;
-                }
+             let x_usize = x as usize;
+             let y_usize = y as usize;
+
+            if let Some(current_cost) = dist[y_usize][x_usize] {
+                // Use total_cmp for robust f64 comparison
+                if cost.total_cmp(&current_cost) == std::cmp::Ordering::Greater { continue; }
             }
-            for &(dx, dy) in &dirs {
-                let nx = x as i32 + dx;
-                let ny = y as i32 + dy;
-                if nx >= 0 && ny >= 0 && nx < self.width as i32 && ny < self.height as i32 {
-                    let nx = nx as u32;
-                    let ny = ny as u32;
-                    // Tentukan biaya tambahan: jika sel tetangga Blocked, beri penalty (misalnya 2),
-                    // jika tidak, biaya 1.
-                    let extra_cost = if self.terrain[ny as usize][nx as usize] == Terrain::Blocked {
-                        2 // Penalty untuk sel Blocked
+
+            // Iterate through 8 neighbors
+            for &(dx, dy) in &[ (0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1) ] {
+                let nx_i = x as i32 + dx;
+                let ny_i = y as i32 + dy;
+
+                if nx_i >= 0 && ny_i >= 0 && nx_i < self.width as i32 && ny_i < self.height as i32 {
+                    let nx_usize = nx_i as usize;
+                    let ny_usize = ny_i as usize;
+
+                    // Skip blocked terrain
+                    if self.terrain[ny_usize][nx_usize] == Terrain::Blocked { continue; }
+
+                    // --- Calculate Move Cost based on Slope (conditionally) ---
+                    let delta_d = if dx == 0 || dy == 0 { self.cellsize } else { self.cellsize * SQRT2 };
+
+                    let move_cost = if use_dtm && dtm.is_some() { // Check flag AND DTM existence
+                        let dtm_layer = dtm.unwrap(); // Safe to unwrap due to is_some() check
+                        let current_elev = dtm_layer.get(y_usize).and_then(|row| row.get(x_usize)).copied().unwrap_or(0.0);
+                        let next_elev = dtm_layer.get(ny_usize).and_then(|row| row.get(nx_usize)).copied().unwrap_or(0.0);
+                        let delta_z = next_elev - current_elev;
+                        let slope = if delta_d > 1e-6 { delta_z / delta_d } else { 0.0 };
+
+                        // Slope Cost Factor: Exponential penalty for uphill, capped
+                        let slope_factor = if slope > 0.0 {
+                            let capped_exp_arg = (slope * 5.0).min(10.0);
+                            1.0 + capped_exp_arg.exp() - 1.0
+                        } else {
+                            1.0
+                        };
+                        delta_d * slope_factor // Apply slope factor
                     } else {
-                        1
+                        delta_d // Simple distance if use_dtm is false or DTM not loaded
                     };
-                    let next_cost = cost + extra_cost;
-                    // Jika sel tetangga belum dikunjungi atau kita menemukan jarak yang lebih pendek,
-                    // update jarak tersebut dan masukkan ke heap.
-                    if dist[ny as usize][nx as usize].is_none()
-                        || next_cost < dist[ny as usize][nx as usize].unwrap()
-                    {
-                        dist[ny as usize][nx as usize] = Some(next_cost);
-                        heap.push(State {
-                            cost: next_cost,
-                            x: nx,
-                            y: ny,
-                        });
+                    // --- End Cost Calculation ---
+
+                    let next_total_cost = cost + move_cost;
+
+                    if dist[ny_usize][nx_usize].is_none() || next_total_cost < dist[ny_usize][nx_usize].unwrap() {
+                        dist[ny_usize][nx_usize] = Some(next_total_cost);
+                        heap.push(State { cost: next_total_cost, x: nx_i as u32, y: ny_i as u32 });
                     }
                 }
             }
         }
-        // Simpan hasil perhitungan ke dalam field distance_to_road
         self.distance_to_road = dist;
+        // Correct the print statement based on whether DTM was used
+        if use_dtm && dtm.is_some() {
+            println!("Computed distance to roads (Least Cost Path using DTM slope).");
+        } else {
+             println!("Computed distance to roads (Simple Distance Path).");
+        }
     }
+
+    // --- Other Grid Methods ---
 
     pub fn is_valid_coordinate(&self, x: u32, y: u32) -> bool {
         x < self.width && y < self.height
@@ -175,195 +258,166 @@ impl Grid {
         }
     }
 
-    pub fn is_affected_by_tsunami(&self, time_step: u32, x: u32, y: u32) -> bool {
-        self.tsunami_events.iter().any(|(t, ex, ey)| {
-            *t == time_step && *ex == x && *ey == y
-        })
-    }
-
     pub fn get_tsunami_height(&self, tsunami_index: usize, x: u32, y: u32) -> u32 {
-        if tsunami_index < self.tsunami_data.len() &&
-           y < self.tsunami_data[tsunami_index].len() as u32 &&
-           x < self.tsunami_data[tsunami_index][y as usize].len() as u32 {
-            self.tsunami_data[tsunami_index][y as usize][x as usize]
-        } else {
-            0 // No tsunami at this position or invalid coordinates
-        }
+        self.tsunami_data.get(tsunami_index)
+            .and_then(|frame| frame.get(y as usize))
+            .and_then(|row| row.get(x as usize))
+            .copied()
+            .unwrap_or(0)
     }
 }
 
-pub fn load_grid_from_ascii(
-    path: &str,
-) -> Result<(Grid, Vec<crate::game::agent::Agent>), std::io::Error> {
-    println!("Opening file {}", path);
-    let content = std::fs::read_to_string(path)?;
-    let mut lines = content.lines();
+// --- Loading Functions ---
 
-    // Baca dan parse header (6 baris)
-    let ncols_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing ncols line"))?;
-    let nrows_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing nrows line"))?;
-    let xll_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing xllcorner line"))?;
-    let yll_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing yllcorner line"))?;
-    let cellsize_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing cellsize line"))?;
-    let _nodata_line = lines.next().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "Missing NODATA_value line")
-    })?;
+// Function to load a generic float ASC layer (like DTM)
+pub fn load_float_asc_layer(path_str: &str) -> io::Result<(Vec<Vec<f64>>, u32, u32, f64, f64, f64)> {
+    println!("Loading float ASC layer from: {}", path_str);
+    let path = Path::new(path_str);
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
 
-    // Parse nilai header
-    let ncols: u32 = ncols_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Cannot parse ncols"))?
-        .parse()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Invalid ncols value"))?;
-    let nrows: u32 = nrows_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Cannot parse nrows"))?
-        .parse()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Invalid nrows value"))?;
-    let xllcorner: f64 = xll_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Cannot parse xllcorner"))?
-        .parse()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Invalid xllcorner value"))?;
-    let yllcorner: f64 = yll_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Cannot parse yllcorner"))?
-        .parse()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Invalid yllcorner value"))?;
-    let cellsize: f64 = cellsize_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Cannot parse cellsize"))?
-        .parse()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Invalid cellsize value"))?;
+    let mut parse_header = |line_opt: Option<io::Result<String>>, name: &str| -> io::Result<String> {
+        line_opt.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Missing {} line", name)))?
+    };
+    let mut parse_value = |line: &str, name: &str| -> io::Result<f64> {
+        line.split_whitespace().nth(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Cannot parse {}", name)))?
+            .parse::<f64>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid {} value: {}", name, e)))
+    };
 
-    println!("Cellsize: {}", cellsize);
-    println!("Nrows: {}", nrows);
-    println!("Ncols: {}", ncols);
-    println!("xll_line: {}", xll_line);
-    println!("yll_line: {}", yll_line);
-    println!("Xllcorner: {:.10}", xllcorner);
-    println!("Yllcorner: {:.10}", yllcorner);
+    let ncols_line = parse_header(lines.next(), "ncols")?;
+    let nrows_line = parse_header(lines.next(), "nrows")?;
+    let xll_line = parse_header(lines.next(), "xllcorner")?;
+    let yll_line = parse_header(lines.next(), "yllcorner")?;
+    let cellsize_line = parse_header(lines.next(), "cellsize")?;
+    let nodata_line = parse_header(lines.next(), "NODATA_value")?;
 
-    // Inisialisasi struktur grid sesuai dimensi yang didapatkan dari header
-    let mut terrain = vec![vec![Terrain::Blocked; ncols as usize]; nrows as usize];
-    let mut shelters = Vec::new();
-    let mut agent_positions = Vec::new();
-    let mut road_cells = Vec::new();
+    let ncols = parse_value(&ncols_line, "ncols")? as u32;
+    let nrows = parse_value(&nrows_line, "nrows")? as u32;
+    let xllcorner = parse_value(&xll_line, "xllcorner")?;
+    let yllcorner = parse_value(&yll_line, "yllcorner")?;
+    let cellsize = parse_value(&cellsize_line, "cellsize")?;
+    let nodata_value = parse_value(&nodata_line, "NODATA_value")?;
 
-    // Iterasi tiap baris data (setelah header)
-    for (y, line) in lines.enumerate() {
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.len() < ncols as usize {
-            continue; // Atau kembalikan error jika data tidak lengkap
+    println!("  Header: {}x{}, cellsize={}, nodata={}", ncols, nrows, cellsize, nodata_value);
+
+    let mut data: Vec<Vec<f64>> = Vec::with_capacity(nrows as usize);
+
+    for (r, line_result) in lines.enumerate() {
+         if r >= nrows as usize { break; }
+         let line = line_result?;
+         let row: Vec<f64> = line.split_whitespace()
+            .filter_map(|token| token.parse::<f64>().ok())
+            .map(|val| {
+                if (val - nodata_value).abs() < 1e-6 { 0.0 } else { val } // Use 0.0 for NODATA for now
+            })
+            .collect();
+
+        if row.len() != ncols as usize {
+             return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Row {} has {} columns, expected {}", r, row.len(), ncols)));
         }
-        for (x, token) in tokens.iter().enumerate().take(ncols as usize) {
-            terrain[y][x] = match *token {
-                "0" | "0.0" => Terrain::Blocked,
-                "1" => {
-                    road_cells.push((x as u32, y as u32));
-                    Terrain::Road
-                }
+        data.push(row);
+    }
+
+     if data.len() != nrows as usize {
+         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Found {} rows, expected {}", data.len(), nrows)));
+     }
+
+    println!("  Successfully loaded {}x{} float data.", ncols, nrows);
+    Ok((data, ncols, nrows, xllcorner, yllcorner, cellsize))
+}
+
+
+// Updated load_grid_from_ascii
+pub fn load_grid_from_ascii(path_str: &str) -> io::Result<(Grid, Vec<Agent>)> {
+    println!("Loading base grid from ASCII: {}", path_str);
+    let path = Path::new(path_str);
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    let mut parse_header = |line_opt: Option<io::Result<String>>, name: &str| -> io::Result<String> {
+        line_opt.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Missing {} line", name)))?
+    };
+    let mut parse_u32 = |line: &str, name: &str| -> io::Result<u32> {
+        line.split_whitespace().nth(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Cannot parse {}", name)))?
+            .parse::<u32>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid {} value: {}", name, e)))
+    };
+     let mut parse_f64 = |line: &str, name: &str| -> io::Result<f64> {
+        line.split_whitespace().nth(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Cannot parse {}", name)))?
+            .parse::<f64>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid {} value: {}", name, e)))
+    };
+
+    let ncols_line = parse_header(lines.next(), "ncols")?;
+    let nrows_line = parse_header(lines.next(), "nrows")?;
+    let xll_line = parse_header(lines.next(), "xllcorner")?;
+    let yll_line = parse_header(lines.next(), "yllcorner")?;
+    let cellsize_line = parse_header(lines.next(), "cellsize")?;
+    let _nodata_line = parse_header(lines.next(), "NODATA_value")?;
+
+    let ncols = parse_u32(&ncols_line, "ncols")?;
+    let nrows = parse_u32(&nrows_line, "nrows")?;
+    let xllcorner = parse_f64(&xll_line, "xllcorner")?;
+    let yllcorner = parse_f64(&yll_line, "yllcorner")?;
+    let cellsize = parse_f64(&cellsize_line, "cellsize")?;
+
+    println!("  Header: {}x{}, cellsize={}, xll={}, yll={}", ncols, nrows, cellsize, xllcorner, yllcorner);
+
+    let mut grid = Grid::new(ncols, nrows, xllcorner, yllcorner, cellsize, ncols, nrows);
+    // Removed agent_positions Vec - agents loaded separately
+
+    for (y, line_result) in lines.enumerate() {
+        if y >= nrows as usize { break; }
+        let line = line_result?;
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() != ncols as usize {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Row {} has {} columns, expected {}", y, tokens.len(), ncols)));
+        }
+
+        for (x, token) in tokens.iter().enumerate() {
+            grid.terrain[y][x] = match *token {
+                // Treat "0" or "0.0" as Land now, assuming NODATA_value isn't actually used for blocking
+                // If you have a different value for truly blocked areas, add a case for it.
+                "0" | "0.0" => Terrain::Land,
+                "1" => Terrain::Road,
                 token if token.starts_with("20") => {
                     if let Ok(shelter_id) = token[2..].parse::<u32>() {
-                        shelters.push((x as u32, y as u32, shelter_id));
+                        grid.shelters.push((x as u32, y as u32, shelter_id));
                         Terrain::Shelter(shelter_id)
                     } else {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Invalid shelter ID format: {}", token),
-                        ));
+                        eprintln!("Warning: Invalid shelter ID format '{}' at ({}, {}). Treating as Blocked.", token, x, y);
+                        Terrain::Blocked
                     }
                 }
-                // "2" => {
-                //     shelters.push((x as u32, y as u32, 0));  // Default shelter ID
-                //     Terrain::Shelter(0)
-                // }
-                "3" => {
-                    agent_positions.push((x as u32, y as u32, AgentType::Adult));
-                    Terrain::Road
+                // Ignore agent codes if present in terrain file
+                "3" | "4" | "5" | "6" => {
+                     eprintln!("Warning: Agent code '{}' found in terrain grid file at ({}, {}). Treating as Blocked.", token, x, y);
+                     Terrain::Blocked
                 }
-                "4" => {
-                    // Child agent
-                    agent_positions.push((x as u32, y as u32, AgentType::Child));
-                    Terrain::Road
+                _ => {
+                    eprintln!("Warning: Unknown terrain code '{}' at ({}, {}). Treating as Blocked.", token, x, y);
+                    Terrain::Blocked
                 }
-                "5" => {
-                    // Teen agent
-                    agent_positions.push((x as u32, y as u32, AgentType::Teen));
-                    Terrain::Road
-                }
-                "6" => {
-                    // Elder agent
-                    agent_positions.push((x as u32, y as u32, AgentType::Elder));
-                    Terrain::Road
-                }
-                // "7" => {
-                //     // Car agent
-                //     agent_positions.push((x as u32, y as u32, AgentType::Car));
-                //     Terrain::Road
-                // }
-                _ => Terrain::Blocked,
             };
         }
     }
 
-    let agents: Vec<crate::game::agent::Agent> = agent_positions
-        .into_iter()
-        .enumerate()
-        .map(|(index, (x, y, agent_type))| {
-            let is_on_road = terrain[y as usize][x as usize] == Terrain::Road;
-            crate::game::agent::Agent::new(index, x, y, agent_type, is_on_road) 
-            // {
-            //     id: index,
-            //     x,
-            //     y,
-            //     speed: crate::game::agent::Agent::new(0, 0, agent_type).speed,
-            //     remaining_steps: crate::game::agent::Agent::new(0, 0, agent_type).speed,
-            //     is_on_road,
-            //     agent_type,
-            //     shelter_priority: crate::game::agent::Agent::new(0, 0, agent_type).shelter_priority,
-            // }
-        })
-        .collect();
+     if grid.terrain.len() != nrows as usize {
+         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Found {} rows, expected {}", grid.terrain.len(), nrows)));
+     }
 
-    let mut grid = Grid {
-        width: ncols,
-        height: nrows,
-        xllcorner,
-        yllcorner,
-        cellsize,
-        terrain,
-        shelters,
-        agents_in_cell: vec![vec![Vec::new(); ncols as usize]; nrows as usize],
-        shelter_agents: HashMap::new(),
-        distance_to_shelter: vec![vec![None; ncols as usize]; nrows as usize],
-        distance_to_road: vec![vec![None; ncols as usize]; nrows as usize],
-        population: vec![vec![0; ncols as usize]; nrows as usize],
-        tsunami_events: Vec::new(),
-        tsunami_data: Vec::new(),
-        nrow: nrows,
-        ncol: ncols
-    };
+    // Compute initial distances (always without DTM at this stage)
+    grid.compute_distance_to_shelters(false);
+    grid.compute_distance_to_road(false);
 
-    grid.compute_distance_to_shelters();
-    grid.compute_road_distances_from_agents();
+    println!("  Successfully loaded grid terrain and computed initial distances (without DTM).");
 
-    grid.tsunami_data = Vec::new();
-
-    Ok((grid, agents))
+    // Return grid and an empty agent list
+    Ok((grid, Vec::new()))
 }
