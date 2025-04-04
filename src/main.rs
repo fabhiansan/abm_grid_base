@@ -3,7 +3,7 @@ mod api;
 
 use game::agent::{Agent, AgentType};
 use game::game::Model;
-use game::grid::{load_grid_from_ascii, Grid, Terrain};
+use game::grid::{load_grid_from_ascii, load_float_asc_layer, Grid, Terrain}; // Added load_float_asc_layer
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ impl Default for ShelterAgentTypeData {
 // const TSUNAMI_DELAY: u32 = 100; 
 // const TSUNAMI_DELAY: u32 = 30 * 60;
 const TSUNAMI_DELAY: u32 = 5;
-const TSUNAMI_SPEED_TIME: u32 = 2;
+const TSUNAMI_SPEED_TIME: u32 = 60;
 
 #[derive(Serialize, Deserialize)]
 pub struct ShelterData {
@@ -322,6 +322,55 @@ fn main() -> io::Result<()> {
     let tsunami_len = tsunami_data.len();
     grid.tsunami_data = tsunami_data; // Assign the loaded tsunami data to grid
     println!("Tsunami data length: {}", tsunami_len);
+
+
+    // --- Load DTM Data ---
+    // TODO: Get DTM path from config properly
+    let dtm_path = "data_sample/sample_dtm.asc"; // Placeholder path
+    println!("Attempting to load DTM from: {}", dtm_path);
+    match load_float_asc_layer(dtm_path) {
+        Ok((dtm_data, dtm_ncols, dtm_nrows, _, _, _)) => {
+            if dtm_ncols == grid.ncol && dtm_nrows == grid.nrow {
+                grid.environment_layers.insert("dtm".to_string(), dtm_data);
+                println!("Successfully loaded DTM data.");
+
+                // --- Conditionally Recompute Distance Fields with DTM ---
+                // TODO: Use a proper config flag (e.g., config.use_dtm_for_pathfinding)
+                let use_dtm_for_pathfinding = true; // Placeholder: Assume true for now if DTM loaded
+
+                // --- Debug Print: Sample distance before DTM recalculation ---
+                let sample_y = grid.nrow / 2;
+                let sample_x = grid.ncol / 2;
+                if sample_y < grid.nrow && sample_x < grid.ncol {
+                     println!("DEBUG: Distance to shelter at ({},{}) BEFORE DTM recalc: {:?}", sample_x, sample_y, grid.distance_to_shelter[sample_y as usize][sample_x as usize]);
+                }
+                // --- End Debug Print ---
+
+                if use_dtm_for_pathfinding {
+                    println!("DEBUG: Calling compute_distance_to_shelters(true) and compute_distance_to_road(true)..."); // Debug confirmation
+                    grid.compute_distance_to_shelters(true);
+                    grid.compute_distance_to_road(true);
+
+                     // --- Debug Print: Sample distance after DTM recalculation ---
+                     if sample_y < grid.nrow && sample_x < grid.ncol {
+                         println!("DEBUG: Distance to shelter at ({},{}) AFTER DTM recalc: {:?}", sample_x, sample_y, grid.distance_to_shelter[sample_y as usize][sample_x as usize]);
+                     }
+                     // --- End Debug Print ---
+
+                } else {
+                     println!("DTM loaded, but pathfinding will use simple distance.");
+                }
+            } else {
+                eprintln!("Error: DTM dimensions ({}x{}) do not match grid dimensions ({}x{}). DTM not used.",
+                         dtm_ncols, dtm_nrows, grid.ncol, grid.nrow);
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to load DTM data from {}: {}. Proceeding without DTM.", dtm_path, e);
+        }
+    }
+    // --- End DTM Loading ---
+
 
     // println!("Loading tsunami inundation data...");
     // let tsunami_data = read_tsunami_data(
