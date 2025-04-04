@@ -1,5 +1,6 @@
 use rand::prelude::*;
 use rand::distr::weighted::WeightedIndex;
+use rand::thread_rng; // Correct import location
 use std::fmt;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -38,6 +39,7 @@ pub struct Agent {
     pub has_decided_to_evacuate: bool, // Flag for evacuation decision
     // --- Added based on Paper 2 ---
     pub evacuation_trigger_time: Option<u32>, // Step when triggered
+    pub is_in_shelter: bool, // Flag to indicate if agent is currently in a shelter cell
 }
 
 pub const BASE_SPEED: f64 = 2.66;
@@ -61,33 +63,36 @@ impl Agent {
             agent_type,
             is_alive: true,
             // --- Initialize new fields ---
-            knowledge_level: thread_rng().gen_range(10..=90), // Random knowledge for now
-            household_size: thread_rng().gen_range(1..=5), // Random household size 1-5
+            // Use Rng trait for gen_range - Apply deprecated fixes
+            knowledge_level: thread_rng().gen_range(10..=90), // Use imported thread_rng
+            household_size: thread_rng().gen_range(1..=5), // Use imported thread_rng
             has_decided_to_evacuate: false, // Start undecided
             evacuation_trigger_time: None, // Not triggered initially
+            is_in_shelter: false, // Start outside shelter
         }
     }
 }
 
 
-use rand::prelude::IndexedRandom;
-use rand::{rng, thread_rng};
+// Removed: use rand::prelude::IndexedRandom;
+// Removed: use rand::{rng, thread_rng}; // We'll use thread_rng() directly where needed
 
 impl AgentType {
     pub fn random() -> Self {
         let weights = [6.21, 13.41, 59.10, 19.89]; // Distribusi bobot
 
-        let variants = [
-            AgentType::Child,
-            AgentType::Teen,
-            AgentType::Adult,
-            AgentType::Elder,
-        ];
-        let mut rng = rng();
+        // Removed unused variants array
+        // let variants = [
+        //     AgentType::Child,
+        //     AgentType::Teen,
+        //     AgentType::Adult,
+        //     AgentType::Elder,
+        // ];
+        let mut rng = thread_rng(); // Get thread-local RNG
         let dist = WeightedIndex::new(&weights).unwrap();
 
 
-        // *variants.choose(&mut rng).unwrap()
+        // *variants.choose(&mut rng).unwrap() // variants was removed
         match dist.sample(&mut rng) {
             0 => AgentType::Child,
             1 => AgentType::Teen,

@@ -1,9 +1,9 @@
-use crate::game::agent::{Agent, AgentType};
+use crate::game::agent::{AgentType}; // Agent removed
 use crate::game::game::Model;
-use crate::game::grid::{load_grid_from_ascii, Grid, Terrain}; // Added Terrain import
+use crate::game::grid::{load_grid_from_ascii, Terrain}; // Grid removed, Terrain kept
 use crate::{
-    export_agent_statistics, export_agents_to_geojson, load_population_and_create_agents,
-    read_tsunami_data, DeadAgentTypeData, ShelterAgentTypeData, TSUNAMI_DELAY, TSUNAMI_SPEED_TIME,
+    export_agent_statistics, load_population_and_create_agents, // export_agents_to_geojson removed
+    read_tsunami_data, DeadAgentTypeData, ShelterAgentTypeData, /* Removed TSUNAMI_DELAY */ TSUNAMI_SPEED_TIME,
 };
 
 use actix_cors::Cors;
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 
 // Configuration for simulation
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)] // Added Debug derive
 pub struct SimulationConfig {
     pub location: String,
     pub grid_path: String,
@@ -28,6 +28,8 @@ pub struct SimulationConfig {
     pub max_steps: Option<u32>,
     pub dtm_path: Option<String>, // Optional path for DTM data
     pub use_dtm_for_cost: bool, // Flag to enable/disable DTM in cost calculation
+    pub tsunami_delay: u32, // Delay before tsunami becomes active
+    pub agent_reaction_delay: u32, // Delay before agents start reacting
 }
 
 impl Default for SimulationConfig {
@@ -38,10 +40,11 @@ impl Default for SimulationConfig {
             population_path: "./data_sample/sample_agents.asc".to_string(),
             tsunami_data_path: "./data_sample/tsunami_ascii_sample".to_string(),
             output_path: "./output".to_string(),
-            max_steps: None,
-            // Default to the newly generated sample DTM path
+            max_steps: Some(5000), // Default max steps
             dtm_path: Some("./data_sample/sample_dtm.asc".to_string()),
             use_dtm_for_cost: true, // Default to using DTM if available
+            tsunami_delay: 100, // Default tsunami delay (steps)
+            agent_reaction_delay: 50, // Default agent reaction delay (steps)
         }
     }
 }
@@ -114,9 +117,12 @@ async fn get_config(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
 #[post("/config")]
 async fn update_config(data: web::Data<Arc<Mutex<AppState>>>, config: web::Json<SimulationConfig>) -> impl Responder {
     let mut app_state = data.lock().unwrap();
+    // TODO: Add validation for the incoming config if necessary
+    println!("Updating config to: {:?}", config);
     app_state.config = config.into_inner();
     HttpResponse::Ok().json(json!({"status": "ok", "message": "Configuration updated"}))
 }
+
 
 #[post("/init")]
 async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
@@ -124,18 +130,24 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
     if app_state.state.is_running {
         return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation is already running or initialized. Reset first."}));
     }
+    // Reset state and counters
     app_state.state = SimulationState::default();
     app_state.death_json_counter = Vec::new();
     app_state.shelter_json_counter = Vec::new();
-    app_state.model = None;
-    let config = app_state.config.clone();
-    let (grid_path, population_path, tsunami_data_path) = config.get_location_paths();
-    drop(app_state); // Release lock before I/O
+    app_state.model = None; // Clear previous model
 
+    // Use the currently set config in AppState
+    let config = app_state.config.clone(); // Clone the config *currently* in the state
+    let (grid_path, population_path, tsunami_data_path) = config.get_location_paths();
+    drop(app_state); // Release lock before potentially long I/O
+
+    println!("Initializing simulation using current config: {:?}", config); // Log the config being used
     println!("Initializing simulation for location: {}", config.location);
     println!("Using grid path: {}", grid_path);
     println!("Using population path: {}", population_path);
     println!("Using tsunami data path: {}", tsunami_data_path);
+    println!("Tsunami Delay: {}, Agent Reaction Delay: {}", config.tsunami_delay, config.agent_reaction_delay);
+
 
     // Load base grid (terrain, shelters)
     let (mut grid, mut agents) = match load_grid_from_ascii(&grid_path) {
@@ -147,37 +159,46 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
     };
 
     // Load population agents
-    let mut next_agent_id = agents.len(); // Start ID after any agents potentially loaded from grid file (though we removed that)
+    let mut next_agent_id = agents.len();
     if let Err(e) = load_population_and_create_agents(&population_path, grid.width, grid.height, &mut grid, &mut agents, &mut next_agent_id) {
         eprintln!("Failed to load population from '{}': {}", population_path, e);
         return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to load or process population file '{}': {}", population_path, e)}));
     }
+    println!("Loaded {} agents from population file.", agents.len());
+
 
     // Load tsunami data
      let tsunami_data = match read_tsunami_data(&tsunami_data_path, grid.ncol, grid.nrow) {
         Ok(data) => data,
         Err(e) => {
             eprintln!("Failed to read tsunami data from '{}': {}", tsunami_data_path, e);
+            // Consider if this should be a fatal error or just a warning allowing simulation without tsunami
             return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to read tsunami data from directory '{}': {}", tsunami_data_path, e)}));
         }
     };
     let tsunami_len = tsunami_data.len();
+    println!("Loaded {} tsunami data steps.", tsunami_len);
     grid.tsunami_data = tsunami_data;
 
     // Load Optional DTM Layer
-    if let Some(dtm_path) = &config.dtm_path {
-        println!("Loading DTM data from: {}", dtm_path);
-        match crate::game::grid::load_float_asc_layer(dtm_path) {
-            Ok((dtm_data, dtm_ncols, dtm_nrows, _, _, _)) => {
-                if dtm_ncols == grid.width && dtm_nrows == grid.height {
-                    grid.environment_layers.insert("dtm".to_string(), dtm_data);
-                    println!("  Successfully loaded DTM data.");
-                    // Distances will be recomputed after model creation
-                } else {
-                    eprintln!("Error: DTM dimensions ({}x{}) do not match grid dimensions ({}x{}). DTM not loaded.", dtm_ncols, dtm_nrows, grid.width, grid.height);
+    // Use get_dtm_path helper method if available, otherwise access directly
+    let dtm_path_opt = config.dtm_path.clone(); // Clone to avoid borrowing issues
+    if let Some(dtm_path) = dtm_path_opt {
+        if !dtm_path.is_empty() {
+            println!("Loading DTM data from: {}", dtm_path);
+            match crate::game::grid::load_float_asc_layer(&dtm_path) {
+                Ok((dtm_data, dtm_ncols, dtm_nrows, _, _, _)) => {
+                    if dtm_ncols == grid.width && dtm_nrows == grid.height {
+                        grid.environment_layers.insert("dtm".to_string(), dtm_data);
+                        println!("  Successfully loaded DTM data.");
+                    } else {
+                        eprintln!("Error: DTM dimensions ({}x{}) do not match grid dimensions ({}x{}). DTM not loaded.", dtm_ncols, dtm_nrows, grid.width, grid.height);
+                    }
                 }
+                Err(e) => { eprintln!("Error loading DTM data from '{}': {}. Proceeding without DTM.", dtm_path, e); }
             }
-            Err(e) => { eprintln!("Error loading DTM data from '{}': {}. Proceeding without DTM.", dtm_path, e); }
+        } else {
+             println!("DTM path in config is empty. Skipping DTM loading.");
         }
     } else {
         println!("No DTM path provided in config. Skipping DTM loading.");
@@ -186,28 +207,26 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
     // Create Model
     let mut model = Model { grid, agents, dead_agents: 0, dead_agent_types: Vec::new() };
 
-    // Recompute distances if DTM was loaded, passing the config flag
-    if config.dtm_path.is_some() && model.grid.environment_layers.contains_key("dtm") {
-         println!("Recomputing distances using config setting use_dtm_for_cost: {}", config.use_dtm_for_cost);
-         model.grid.compute_distance_to_shelters(config.use_dtm_for_cost);
-         model.grid.compute_distance_to_road(config.use_dtm_for_cost);
-    } else {
-        // If DTM wasn't loaded or path not specified, compute without DTM flag
-        println!("Recomputing distances without DTM (DTM not loaded or path not specified).");
-        model.grid.compute_distance_to_shelters(false);
-        model.grid.compute_distance_to_road(false);
-    }
+    // Recompute distances using DTM if available and configured
+    let use_dtm = config.use_dtm_for_cost && model.grid.environment_layers.contains_key("dtm");
+    println!("Recomputing distances (using DTM: {})...", use_dtm);
+    model.grid.compute_distance_to_shelters(use_dtm);
+    model.grid.compute_distance_to_road(use_dtm);
+    println!("Distances recomputed.");
+
 
     // Re-acquire lock and update state
     let mut app_state = data.lock().unwrap();
     app_state.model = Some(model); // Store the final model
-    app_state.state.is_running = true;
+    app_state.state.is_running = true; // Mark as running
     app_state.state.is_completed = false;
     let final_agent_count = app_state.model.as_ref().unwrap().agents.len();
+    // Export stats after model is stored
     if let Err(e) = export_agent_statistics(&app_state.model.as_ref().unwrap().agents) { eprintln!("Warning: Failed to export agent statistics: {}", e); }
 
     HttpResponse::Ok().json(json!({"status": "ok", "message": "Simulation initialized", "details": {"tsunami_data_length": tsunami_len, "agents_count": final_agent_count}}))
 }
+
 
 #[post("/step")]
 async fn run_step(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
@@ -216,39 +235,107 @@ async fn run_step(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     if app_state.state.is_completed { return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation already completed"})); }
 
     let current_step = app_state.state.current_step;
-    let is_tsunami = app_state.state.is_tsunami;
+    // Get delays from config
+    let agent_reaction_delay = app_state.config.agent_reaction_delay;
+    let tsunami_delay = app_state.config.tsunami_delay;
+
+    // Determine if tsunami is active for this step
+    let is_tsunami_active = current_step >= tsunami_delay;
+
     let tsunami_index = app_state.state.tsunami_index;
     let model = app_state.model.as_mut().unwrap();
-    model.step(current_step, is_tsunami, tsunami_index);
+
+    // Call step with the new signature
+    model.step(current_step, agent_reaction_delay, is_tsunami_active, tsunami_index);
 
     // Collect results
-    let mut dead_agent_counts = DeadAgentTypeData::default(); for agent_type in &model.dead_agent_types { match agent_type { AgentType::Child => dead_agent_counts.child += 1, AgentType::Teen => dead_agent_counts.teen += 1, AgentType::Adult => dead_agent_counts.adult += 1, AgentType::Elder => dead_agent_counts.elder += 1, } dead_agent_counts.total += 1; }
-    let dead_agents_count = model.dead_agents;
-    let shelter_info: HashMap<String, ShelterAgentTypeData> = model.grid.shelters.iter().map(|&(_, _, id)| { let key = format!("shelter_{}_{}", id, current_step); let count = model.grid.shelter_agents.get(&id).map(|agents_in_shelter| { let mut data = ShelterAgentTypeData::default(); for agent_tuple in agents_in_shelter { match agent_tuple.1 { AgentType::Child => data.child += 1, AgentType::Teen => data.teen += 1, AgentType::Adult => data.adult += 1, AgentType::Elder => data.elder += 1, } } data }).unwrap_or_default(); (key, count) }).collect();
+    let mut dead_agent_counts = DeadAgentTypeData::default();
+    // Use model's cumulative count for total
+    dead_agent_counts.total = model.dead_agents as u32;
+    // Populate type counts from model.dead_agent_types (assuming it holds all dead types so far)
+    // This might double-count if not cleared, but reflects the total types that died up to this step
+    for agent_type in &model.dead_agent_types {
+         match agent_type {
+             AgentType::Child => dead_agent_counts.child += 1,
+             AgentType::Teen => dead_agent_counts.teen += 1,
+             AgentType::Adult => dead_agent_counts.adult += 1,
+             AgentType::Elder => dead_agent_counts.elder += 1,
+         }
+    }
 
-    // Check state changes
+    let dead_agents_count = model.dead_agents; // Get updated total count
+    let shelter_info: HashMap<String, ShelterAgentTypeData> = model.grid.shelters.iter().map(|&(_, _, id)| {
+        let key = format!("shelter_{}", id); // Simpler key for shelter data
+        let count = model.grid.shelter_agents.get(&id).map(|agents_in_shelter| {
+            let mut data = ShelterAgentTypeData::default();
+            for agent_tuple in agents_in_shelter {
+                match agent_tuple.1 {
+                    AgentType::Child => data.child += 1,
+                    AgentType::Teen => data.teen += 1,
+                    AgentType::Adult => data.adult += 1,
+                    AgentType::Elder => data.elder += 1,
+                }
+            }
+            data
+        }).unwrap_or_default();
+        (key, count)
+    }).collect();
+
+
+    let tsunami_data_len = model.grid.tsunami_data.len(); // Get len before dropping model
+
+    // No need to explicitly drop `model` here, the borrow ends naturally
+
+    // Check state changes using config delays
     let mut new_tsunami_index = tsunami_index;
     let mut should_complete_simulation = false;
-    let should_update_tsunami = current_step >= TSUNAMI_DELAY;
-    let tsunami_data_len = model.grid.tsunami_data.len();
-    let should_advance_tsunami_index = should_update_tsunami && current_step > 0 && current_step % TSUNAMI_SPEED_TIME == 0;
-    drop(model); // Release model borrow
+    // Advance index only if tsunami is active and speed time interval passed *since tsunami started*
+    let should_advance_tsunami_index = is_tsunami_active
+                                        && current_step >= tsunami_delay // Check if current step is at or past the delay
+                                        && tsunami_data_len > 0 // Ensure there is tsunami data
+                                        && (current_step - tsunami_delay) % TSUNAMI_SPEED_TIME == 0; // Check interval relative to delay
 
     // Update state
-     if should_update_tsunami { app_state.state.is_tsunami = true; if should_advance_tsunami_index { if tsunami_index + 1 >= tsunami_data_len { should_complete_simulation = true; } else { new_tsunami_index = tsunami_index + 1; } } }
+     app_state.state.is_tsunami = is_tsunami_active; // Update state flag based on comparison with config.tsunami_delay
+     if is_tsunami_active && should_advance_tsunami_index {
+         if tsunami_index + 1 >= tsunami_data_len {
+             should_complete_simulation = true; // End if last tsunami frame processed
+             println!("Reached end of tsunami data at step {}.", current_step);
+         } else {
+             new_tsunami_index = tsunami_index + 1;
+             println!("Advanced tsunami index to {} at step {}", new_tsunami_index, current_step);
+         }
+     }
+
      let step_result = StepResult { step: current_step, dead_agents: dead_agents_count, dead_agent_types: dead_agent_counts, shelter_data: shelter_info.clone() };
-     app_state.death_json_counter.push(json!({"step": current_step, "dead_agents": dead_agent_counts}));
-     app_state.shelter_json_counter.push(json!(shelter_info));
+     app_state.death_json_counter.push(json!({"step": current_step, "dead_agents": dead_agent_counts})); // Store cumulative counts for now
+     app_state.shelter_json_counter.push(json!({"step": current_step, "shelters": shelter_info})); // Store shelter counts per step
      app_state.state.tsunami_index = new_tsunami_index;
-     app_state.state.dead_agents = dead_agents_count;
-     if should_complete_simulation { app_state.state.is_completed = true; app_state.state.is_running = false; } else if let Some(max_steps) = app_state.config.max_steps { if current_step + 1 >= max_steps { app_state.state.is_completed = true; app_state.state.is_running = false; } }
-     if !app_state.state.is_completed { app_state.state.current_step += 1; }
+     app_state.state.dead_agents = dead_agents_count; // Update cumulative dead count in state
+
+     // Check for completion based on max_steps or end of tsunami data
+     if should_complete_simulation {
+         app_state.state.is_completed = true;
+         app_state.state.is_running = false;
+     } else if let Some(max_steps) = app_state.config.max_steps {
+         if current_step + 1 >= max_steps {
+             app_state.state.is_completed = true;
+             app_state.state.is_running = false;
+             println!("Reached max steps ({}) at step {}.", max_steps, current_step);
+         }
+     }
+
+     // Increment step if not completed
+     if !app_state.state.is_completed {
+         app_state.state.current_step += 1;
+     }
 
     let state_clone = app_state.state.clone();
     drop(app_state); // Release lock
 
     HttpResponse::Ok().json(json!({"status": "ok", "result": step_result, "simulation_state": state_clone}))
 }
+
 
 #[post("/run/{steps}")]
 async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Path<u32>) -> impl Responder {
@@ -260,47 +347,121 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
 
     for _ in 0..steps_to_run {
         let mut app_state = data.lock().unwrap();
-        if app_state.model.is_none() || app_state.state.is_completed { drop(app_state); break; }
+        // Check if simulation should stop (not initialized or completed)
+        if app_state.model.is_none() || app_state.state.is_completed {
+            drop(app_state);
+            break; // Exit the loop if simulation is not ready or finished
+        }
 
         let current_step = app_state.state.current_step;
-        let is_tsunami = app_state.state.is_tsunami;
+        // Get delays from config for this step
+        let agent_reaction_delay = app_state.config.agent_reaction_delay;
+        let tsunami_delay = app_state.config.tsunami_delay;
+
+        // Determine if tsunami is active for this step
+        let is_tsunami_active = current_step >= tsunami_delay;
+
         let tsunami_index = app_state.state.tsunami_index;
         let model = app_state.model.as_mut().unwrap();
-        model.step(current_step, is_tsunami, tsunami_index);
+
+        // Call step with the new signature
+        model.step(current_step, agent_reaction_delay, is_tsunami_active, tsunami_index);
 
         // Collect results
-        let mut dead_agent_counts = DeadAgentTypeData::default(); for agent_type in &model.dead_agent_types { match agent_type { AgentType::Child => dead_agent_counts.child += 1, AgentType::Teen => dead_agent_counts.teen += 1, AgentType::Adult => dead_agent_counts.adult += 1, AgentType::Elder => dead_agent_counts.elder += 1, } dead_agent_counts.total += 1; }
-        let dead_agents_count = model.dead_agents;
-        let shelter_info: HashMap<String, ShelterAgentTypeData> = model.grid.shelters.iter().map(|&(_, _, id)| { let key = format!("shelter_{}_{}", id, current_step); let count = model.grid.shelter_agents.get(&id).map(|agents_in_shelter| { let mut data = ShelterAgentTypeData::default(); for agent_tuple in agents_in_shelter { match agent_tuple.1 { AgentType::Child => data.child += 1, AgentType::Teen => data.teen += 1, AgentType::Adult => data.adult += 1, AgentType::Elder => data.elder += 1, } } data }).unwrap_or_default(); (key, count) }).collect();
+        let mut dead_agent_counts = DeadAgentTypeData::default();
+        // Use model's cumulative count
+        dead_agent_counts.total = model.dead_agents as u32;
+         // Populate type counts from model.dead_agent_types
+         for agent_type in &model.dead_agent_types {
+             match agent_type {
+                 AgentType::Child => dead_agent_counts.child += 1,
+                 AgentType::Teen => dead_agent_counts.teen += 1,
+                 AgentType::Adult => dead_agent_counts.adult += 1,
+                 AgentType::Elder => dead_agent_counts.elder += 1,
+             }
+         }
 
-        // Check state changes
+        let dead_agents_count = model.dead_agents;
+        let shelter_info: HashMap<String, ShelterAgentTypeData> = model.grid.shelters.iter().map(|&(_, _, id)| {
+            let key = format!("shelter_{}", id); // Simpler key
+            let count = model.grid.shelter_agents.get(&id).map(|agents_in_shelter| {
+                let mut data = ShelterAgentTypeData::default();
+                for agent_tuple in agents_in_shelter {
+                    match agent_tuple.1 {
+                        AgentType::Child => data.child += 1,
+                        AgentType::Teen => data.teen += 1,
+                        AgentType::Adult => data.adult += 1,
+                        AgentType::Elder => data.elder += 1,
+                    }
+                }
+                data
+            }).unwrap_or_default();
+            (key, count)
+        }).collect();
+
+        let tsunami_data_len = model.grid.tsunami_data.len(); // Get len before dropping model
+
+        // No need to explicitly drop `model` here, the borrow ends naturally
+
+        // Check state changes using config delays
         let mut new_tsunami_index = tsunami_index;
         let mut should_complete_simulation = false;
-        let should_update_tsunami = current_step >= TSUNAMI_DELAY;
-        let tsunami_data_len = model.grid.tsunami_data.len();
-        let should_advance_tsunami_index = should_update_tsunami && current_step > 0 && current_step % TSUNAMI_SPEED_TIME == 0;
-        drop(model); // Release model borrow
+        // Advance index only if tsunami is active and speed time interval passed *since tsunami started*
+        let should_advance_tsunami_index = is_tsunami_active
+                                            && current_step >= tsunami_delay // Check if current step is at or past the delay
+                                            && tsunami_data_len > 0 // Ensure there is tsunami data
+                                            && (current_step - tsunami_delay) % TSUNAMI_SPEED_TIME == 0; // Check interval relative to delay
 
         // Update state
-        if should_update_tsunami { app_state.state.is_tsunami = true; if should_advance_tsunami_index { if tsunami_index + 1 >= tsunami_data_len { should_complete_simulation = true; } else { new_tsunami_index = tsunami_index + 1; } } }
+        app_state.state.is_tsunami = is_tsunami_active; // Update state flag based on comparison with config.tsunami_delay
+        if is_tsunami_active && should_advance_tsunami_index {
+            if tsunami_index + 1 >= tsunami_data_len {
+                should_complete_simulation = true; // End if last tsunami frame processed
+                println!("Reached end of tsunami data during run_steps at step {}.", current_step);
+            } else {
+                new_tsunami_index = tsunami_index + 1;
+                 println!("Advanced tsunami index to {} during run_steps at step {}", new_tsunami_index, current_step);
+            }
+        }
+
         let step_result = StepResult { step: current_step, dead_agents: dead_agents_count, dead_agent_types: dead_agent_counts, shelter_data: shelter_info.clone() };
-        app_state.death_json_counter.push(json!({"step": current_step, "dead_agents": dead_agent_counts}));
-        app_state.shelter_json_counter.push(json!(shelter_info));
+        app_state.death_json_counter.push(json!({"step": current_step, "dead_agents": dead_agent_counts})); // Store cumulative counts for now
+        app_state.shelter_json_counter.push(json!({"step": current_step, "shelters": shelter_info})); // Store shelter counts per step
         app_state.state.tsunami_index = new_tsunami_index;
-        app_state.state.dead_agents = dead_agents_count;
-        if should_complete_simulation { app_state.state.is_completed = true; app_state.state.is_running = false; } else if let Some(max_steps) = app_state.config.max_steps { if current_step + 1 >= max_steps { app_state.state.is_completed = true; app_state.state.is_running = false; } }
-        if !app_state.state.is_completed { app_state.state.current_step += 1; }
+        app_state.state.dead_agents = dead_agents_count; // Update cumulative dead count
+
+        // Check for completion based on max_steps or end of tsunami data
+        if should_complete_simulation {
+            app_state.state.is_completed = true;
+            app_state.state.is_running = false;
+        } else if let Some(max_steps) = app_state.config.max_steps {
+            if current_step + 1 >= max_steps {
+                app_state.state.is_completed = true;
+                app_state.state.is_running = false;
+                 println!("Reached max steps ({}) during run_steps at step {}.", max_steps, current_step);
+            }
+        }
+
+        // Increment step if not completed
+        if !app_state.state.is_completed {
+            app_state.state.current_step += 1;
+        }
 
         results.push(json!({"step_executed": true, "step_result": step_result, "simulation_state": app_state.state.clone()}));
         steps_executed_count += 1;
 
-        if app_state.state.is_completed { drop(app_state); break; }
+        // Check completion again before next loop iteration
+        if app_state.state.is_completed {
+            drop(app_state);
+            break;
+        }
         drop(app_state); // Release lock for this iteration
-    }
+    } // End loop for steps_to_run
 
-    let final_state = data.lock().unwrap().state.clone();
+    let final_state = data.lock().unwrap().state.clone(); // Get final state after loop
     HttpResponse::Ok().json(json!({"status": "ok", "steps_requested": steps_to_run, "steps_executed": steps_executed_count, "simulation_state": final_state, "results": results}))
 }
+
 
 #[get("/status")]
 async fn get_status(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {

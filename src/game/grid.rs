@@ -1,6 +1,6 @@
 use crate::game::agent::{Agent, AgentType};
 use crate::game::State; // Assuming State is defined elsewhere, maybe in game::mod.rs?
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque}; // Added HashSet
+use std::collections::{BinaryHeap, HashMap}; // Removed HashSet, VecDeque
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
@@ -277,10 +277,10 @@ pub fn load_float_asc_layer(path_str: &str) -> io::Result<(Vec<Vec<f64>>, u32, u
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
-    let mut parse_header = |line_opt: Option<io::Result<String>>, name: &str| -> io::Result<String> {
+    let parse_header = |line_opt: Option<io::Result<String>>, name: &str| -> io::Result<String> { // Removed mut
         line_opt.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Missing {} line", name)))?
     };
-    let mut parse_value = |line: &str, name: &str| -> io::Result<f64> {
+    let parse_value = |line: &str, name: &str| -> io::Result<f64> { // Removed mut
         line.split_whitespace().nth(1)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Cannot parse {}", name)))?
             .parse::<f64>()
@@ -338,16 +338,16 @@ pub fn load_grid_from_ascii(path_str: &str) -> io::Result<(Grid, Vec<Agent>)> {
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
-    let mut parse_header = |line_opt: Option<io::Result<String>>, name: &str| -> io::Result<String> {
+    let parse_header = |line_opt: Option<io::Result<String>>, name: &str| -> io::Result<String> { // Removed mut
         line_opt.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Missing {} line", name)))?
     };
-    let mut parse_u32 = |line: &str, name: &str| -> io::Result<u32> {
+    let parse_u32 = |line: &str, name: &str| -> io::Result<u32> { // Removed mut
         line.split_whitespace().nth(1)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Cannot parse {}", name)))?
             .parse::<u32>()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid {} value: {}", name, e)))
     };
-     let mut parse_f64 = |line: &str, name: &str| -> io::Result<f64> {
+     let parse_f64 = |line: &str, name: &str| -> io::Result<f64> { // Removed mut
         line.split_whitespace().nth(1)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Cannot parse {}", name)))?
             .parse::<f64>()

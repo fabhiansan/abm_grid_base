@@ -1,7 +1,7 @@
-use rand::seq::SliceRandom; // Impor trait SliceRandom
-
+// Removed: use rand::seq::SliceRandom;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+// Removed: use std::collections::HashMap;
+// Removed: use std::collections::BinaryHeap;
 
 // Remove all derives, implement manually for heap
 pub struct State {
