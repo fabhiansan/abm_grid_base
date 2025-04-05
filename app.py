@@ -51,31 +51,32 @@ def index():
 
 @app.route('/data/metadata')
 def get_metadata():
-    """Fetches simulation status from the Rust API and returns metadata."""
-    # This endpoint combines data from /status for the frontend
-    return proxy_request('GET', '/status') # Simplified to use proxy helper
+    """Fetches simulation status from the Rust API (/api/status) and returns metadata."""
+    # This endpoint combines data from /api/status for the frontend
+    return proxy_request('GET', '/api/status') # Target path updated to include /api
 
 @app.route('/data/current_geojson')
 def get_current_geojson():
-    """Fetches the current agent locations as GeoJSON from the Rust API."""
-    return proxy_request('GET', '/export/geojson', timeout=10) # Use proxy helper
+    """Fetches the current agent locations as GeoJSON from the Rust API (/api/export/geojson)."""
+    return proxy_request('GET', '/api/export/geojson', timeout=10) # Target path updated
 
 @app.route('/init_simulation', methods=['POST'])
 def init_simulation_proxy():
-    """Proxies the POST request to the Rust API's /init endpoint."""
-    return proxy_request('POST', '/init', timeout=20) # Use proxy helper, longer timeout
+    """Proxies the POST request to the Rust API's /api/init endpoint."""
+    # Frontend calls /init_simulation, Rust expects /api/init
+    return proxy_request('POST', '/api/init', timeout=20) # Target path updated
 
 # --- New Proxy Endpoints ---
 
 @app.route('/api/health', methods=['GET'])
 def health_proxy():
-    """Proxies GET /health"""
-    return proxy_request('GET', '/health')
+    """Proxies GET /health (Note: Rust health endpoint is at root)"""
+    return proxy_request('GET', '/health') # Target path is correct
 
 @app.route('/api/config', methods=['GET'])
 def get_config_proxy():
-    """Proxies GET /config"""
-    return proxy_request('GET', '/config')
+    """Proxies GET /api/config"""
+    return proxy_request('GET', '/api/config') # Add /api to target path
 
 @app.route('/api/config', methods=['POST'])
 def update_config_proxy():
@@ -83,46 +84,52 @@ def update_config_proxy():
     json_data = request.get_json()
     if not json_data:
         return jsonify({"error": "Missing JSON body for config update"}), 400
-    return proxy_request('POST', '/config', json_data=json_data)
+    return proxy_request('POST', '/api/config', json_data=json_data) # Add /api to target path
 
 @app.route('/api/step', methods=['POST'])
 def step_proxy():
-    """Proxies POST /step"""
-    return proxy_request('POST', '/step')
+    """Proxies POST /api/step"""
+    return proxy_request('POST', '/api/step') # Add /api to target path
 
 @app.route('/api/run/<int:steps>', methods=['POST'])
 def run_steps_proxy(steps):
-    """Proxies POST /run/{steps}"""
+    """Proxies POST /api/run/{steps}"""
     # Add a longer timeout for potentially long runs
-    return proxy_request('POST', f'/run/{steps}', timeout=60) 
+    return proxy_request('POST', f'/api/run/{steps}', timeout=60) # Add /api to target path
 
 @app.route('/api/export', methods=['GET'])
 def export_proxy():
-    """Proxies GET /export"""
-    return proxy_request('GET', '/export')
+    """Proxies GET /api/export"""
+    return proxy_request('GET', '/api/export') # Add /api to target path
 
 @app.route('/api/reset', methods=['POST'])
 def reset_proxy():
-    """Proxies POST /reset"""
-    return proxy_request('POST', '/reset')
+    """Proxies POST /api/reset"""
+    return proxy_request('POST', '/api/reset') # Add /api to target path
 
 @app.route('/api/grid/geojson', methods=['GET'])
 def grid_geojson_proxy():
-    """Proxies GET /grid/geojson"""
-    return proxy_request('GET', '/grid/geojson', timeout=20) # Longer timeout potentially
+    """Proxies GET /api/grid/geojson"""
+    return proxy_request('GET', '/api/grid/geojson', timeout=20) # Add /api to target path
 
 
 @app.route('/api/tsunami/geojson', methods=['GET'])
 def tsunami_geojson_proxy():
-    """Proxies GET /tsunami/geojson"""
+    """Proxies GET /api/tsunami/geojson"""
     # Tsunami data might change frequently, shorter timeout might be okay
-    return proxy_request('GET', '/tsunami/geojson', timeout=5)
+    return proxy_request('GET', '/api/tsunami/geojson', timeout=5) # Add /api to target path
 
 @app.route('/api/grid/costs', methods=['GET'])
 def grid_costs_proxy():
-    """Proxies GET /grid/costs"""
+    """Proxies GET /api/grid/costs"""
     # This might return a larger payload, increase timeout
-    return proxy_request('GET', '/grid/costs', timeout=30)
+    return proxy_request('GET', '/api/grid/costs', timeout=30) # Add /api to target path
+
+@app.route('/api/agent/<int:agent_id>', methods=['GET'])
+def agent_info_proxy(agent_id):
+    """Proxies GET /api/agent/{agent_id}"""
+    # Frontend calls /api/agent/..., Rust expects /api/agent/...
+    return proxy_request('GET', f'/api/agent/{agent_id}')
 
 # --- Main Execution ---
 if __name__ == '__main__':

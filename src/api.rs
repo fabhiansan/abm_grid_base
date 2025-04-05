@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+// Removed: use actix_web::Error as ActixError;
 // use log::{info, warn}; // Keep commented unless needed
 
 
@@ -503,18 +504,40 @@ async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Res
     let location = &app_state.config.location;
     let epsg_code = match location.as_str() { "pacitan" | "sample" => "EPSG:32749", _ => "EPSG:32750" };
 
-    let mut grouped_data: HashMap<String, Vec<Vec<f64>>> = HashMap::new();
-    for agent in &model.agents {
-        if agent.is_alive {
-            let agent_type_str = agent.agent_type.to_string();
-            let coordinates_list = grouped_data.entry(agent_type_str).or_insert_with(Vec::new);
+    // Create features for each individual agent
+    let features: Vec<Value> = model.agents.iter()
+        .filter(|agent| agent.is_alive) // Only include alive agents
+        .map(|agent| {
+            // Calculate UTM coordinates
             let x_utm = grid.xllcorner + (agent.x as f64 * grid.cellsize);
             let y_utm = grid.yllcorner + ((grid.height - 1 - agent.y) as f64 * grid.cellsize);
-            coordinates_list.push(vec![x_utm, y_utm]);
-        }
-    }
-    let features: Vec<Value> = grouped_data.into_iter().map(|(agent_type, coordinates)| { json!({"type": "Feature", "geometry": {"type": "MultiPoint", "coordinates": coordinates}, "properties": {"timestamp": current_step, "agent_type": agent_type}}) }).collect();
-    let geojson = json!({"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": epsg_code}}, "features": features});
+
+            // Create a Point feature for each agent
+            json!({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [x_utm, y_utm]
+                },
+                "properties": {
+                    "id": agent.id, // Include agent ID
+                    "agent_type": agent.agent_type.to_string(), // Include agent type
+                    "timestamp": current_step
+                    // Add other properties if needed later
+                }
+            })
+        })
+        .collect();
+
+    let geojson = json!({
+        "type": "FeatureCollection",
+        "crs": {
+            "type": "name",
+            "properties": {"name": epsg_code}
+        },
+        "features": features
+    });
+
     HttpResponse::Ok().content_type("application/geo+json").json(geojson)
 }
 
@@ -601,6 +624,31 @@ async fn export_grid_costs(data: web::Data<Arc<Mutex<AppState>>>) -> impl Respon
     HttpResponse::Ok().content_type("application/json").json(costs_payload)
 }
 
+// --- New Handler for Agent Info ---
+#[get("/agent/{agent_id}")]
+async fn get_agent_info(
+    data: web::Data<Arc<Mutex<AppState>>>,
+    agent_id_path: web::Path<usize>,
+) -> impl Responder {
+    let agent_id = agent_id_path.into_inner();
+    let app_state = data.lock().unwrap();
+
+    if let Some(model) = &app_state.model {
+        // Find the agent by ID
+        if let Some(agent) = model.agents.iter().find(|a| a.id == agent_id) {
+            // Return the agent data as JSON
+            HttpResponse::Ok().json(agent)
+        } else {
+            // Agent not found
+            HttpResponse::NotFound().json(json!({"status": "error", "message": format!("Agent with ID {} not found", agent_id)}))
+        }
+    } else {
+        // Simulation not initialized
+        HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation not initialized"}))
+    }
+}
+// --- End New Handler ---
+
 
 // --- Server Setup ---
 pub async fn start_api_server(port: u16) -> std::io::Result<()> {
@@ -625,19 +673,24 @@ pub async fn start_api_server(port: u16) -> std::io::Result<()> {
             .wrap(Logger::default())
             .wrap(cors)
             .app_data(web::Data::new(app_state.clone()))
-            .service(health_check)
-            .service(get_config)
-            .service(update_config)
-            .service(init_simulation)
-            .service(run_step)
-            .service(run_steps)
-            .service(get_status)
-            .service(export_results)
-            .service(export_agent_geojson)
-            .service(export_grid_geojson)
-            .service(export_tsunami_geojson)
-            .service(export_grid_costs) // Add the new cost service
-            .service(reset_simulation)
+            .service(health_check) // Keep health check at root
+            // Scope other API endpoints under /api
+            .service(
+                web::scope("/api")
+                    .service(get_config)
+                    .service(update_config)
+                    .service(init_simulation)
+                    .service(run_step)
+                    .service(run_steps)
+                    .service(get_status)
+                    .service(export_results)
+                    .service(export_agent_geojson)
+                    .service(export_grid_geojson)
+                    .service(export_tsunami_geojson)
+                    .service(export_grid_costs)
+                    .service(get_agent_info)
+                    .service(reset_simulation)
+            )
     })
     .bind(format!("0.0.0.0:{}", port))?
     .run()
