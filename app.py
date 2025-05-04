@@ -131,6 +131,11 @@ def agent_info_proxy(agent_id):
     # Frontend calls /api/agent/..., Rust expects /api/agent/...
     return proxy_request('GET', f'/api/agent/{agent_id}')
 
+@app.route('/api/export/agent_outcomes', methods=['GET'])
+def agent_outcomes_proxy():
+    """Proxies GET /api/export/agent_outcomes"""
+    return proxy_request('GET', '/api/export/agent_outcomes', timeout=15)
+
 # --- Main Execution ---
 if __name__ == '__main__':
     # Make sure the requests library is installed: pip install requests

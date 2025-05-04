@@ -1,9 +1,14 @@
+use std::path::Path;
+use std::fs::File; // For reading JSON file
+use std::io::BufReader; // For reading JSON file
+
+use crate::game::agent::{AgentOutcome, AgentFinalStatus}; // Import outcome types
 use crate::game::agent::{AgentType}; // Agent removed
 use crate::game::game::Model;
 use crate::game::grid::{load_grid_from_ascii, Terrain}; // Grid removed, Terrain kept
 use crate::{
     export_agent_statistics, load_population_and_create_agents, // export_agents_to_geojson removed
-    read_tsunami_data, DeadAgentTypeData, ShelterAgentTypeData, /* Removed TSUNAMI_DELAY */ TSUNAMI_SPEED_TIME,
+    read_tsunami_data, DeadAgentTypeData, ShelterAgentTypeData,
 };
 
 use actix_cors::Cors;
@@ -30,7 +35,16 @@ pub struct SimulationConfig {
     pub dtm_path: Option<String>, // Optional path for DTM data
     pub use_dtm_for_cost: bool, // Flag to enable/disable DTM in cost calculation
     pub tsunami_delay: u32, // Delay before tsunami becomes active
-    pub agent_reaction_delay: u32, // Delay before agents start reacting
+    // Removed: pub agent_reaction_delay: u32,
+    pub tsunami_speed_time: u32, // Time interval (steps) to advance tsunami data index
+    pub data_collection_interval: u32, // Interval (steps) for collecting detailed data
+    pub milling_time_min: u32, // Minimum steps an agent might wait before evacuating
+    pub milling_time_max: u32, // Maximum steps an agent might wait before evacuating
+    pub siren_effectiveness_probability: f32, // Chance (0.0-1.0) agent reacts immediately to siren
+    pub knowledge_level_min: u8, // Minimum initial knowledge level (0-100)
+    pub knowledge_level_max: u8, // Maximum initial knowledge level (0-100)
+    pub household_size_min: u8, // Minimum initial household size
+    pub household_size_max: u8, // Maximum initial household size
 }
 
 impl Default for SimulationConfig {
@@ -45,7 +59,16 @@ impl Default for SimulationConfig {
             dtm_path: Some("./data_sample/sample_dtm.asc".to_string()),
             use_dtm_for_cost: true, // Default to using DTM if available
             tsunami_delay: 100, // Default tsunami delay (steps)
-            agent_reaction_delay: 50, // Default agent reaction delay (steps)
+            // Removed: agent_reaction_delay: 50,
+            tsunami_speed_time: 60, // Default speed time
+            data_collection_interval: 30, // Default collection interval
+            milling_time_min: 5, // Default min milling steps
+            milling_time_max: 20, // Default max milling steps
+            siren_effectiveness_probability: 0.8, // Default 80% chance to react to siren
+            knowledge_level_min: 10, // Default min knowledge
+            knowledge_level_max: 90, // Default max knowledge
+            household_size_min: 1, // Default min household size
+            household_size_max: 5, // Default max household size
         }
     }
 }
@@ -73,7 +96,16 @@ impl SimulationConfig {
     }
 }
 
-// Current state of simulation
+// --- Siren Configuration ---
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SirenConfig {
+    pub activation_step: u32,
+    pub x: u32, // Grid coordinate
+    pub y: u32, // Grid coordinate
+    pub radius_cells: u32, // Radius in grid cells
+}
+
+// --- Simulation State ---
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimulationState {
     pub current_step: u32,
@@ -82,6 +114,7 @@ pub struct SimulationState {
     pub dead_agents: usize,
     pub is_running: bool,
     pub is_completed: bool,
+    pub siren_config: Option<SirenConfig>, // Store full siren config
 }
 
 // Result of simulation step
@@ -100,6 +133,7 @@ pub struct AppState {
     pub model: Option<Model>,
     pub death_json_counter: Vec<serde_json::Value>,
     pub shelter_json_counter: Vec<serde_json::Value>,
+    pub agent_outcomes: Vec<crate::game::agent::AgentOutcome>, // Added for final outcome logging
 }
 
 // --- API Handlers ---
@@ -132,7 +166,11 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
         return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation is already running or initialized. Reset first."}));
     }
     // Reset state and counters
-    app_state.state = SimulationState::default();
+    // Reset state, keeping config but clearing dynamic values including siren config
+    app_state.state = SimulationState {
+        siren_config: None, // Clear siren config on reset
+        ..SimulationState::default() // Keep other defaults
+    };
     app_state.death_json_counter = Vec::new();
     app_state.shelter_json_counter = Vec::new();
     app_state.model = None; // Clear previous model
@@ -147,7 +185,7 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
     println!("Using grid path: {}", grid_path);
     println!("Using population path: {}", population_path);
     println!("Using tsunami data path: {}", tsunami_data_path);
-    println!("Tsunami Delay: {}, Agent Reaction Delay: {}", config.tsunami_delay, config.agent_reaction_delay);
+    println!("Tsunami Delay: {}", config.tsunami_delay); // Removed Agent Reaction Delay log
 
 
     // Load base grid (terrain, shelters)
@@ -161,7 +199,8 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
 
     // Load population agents
     let mut next_agent_id = agents.len();
-    if let Err(e) = load_population_and_create_agents(&population_path, grid.width, grid.height, &mut grid, &mut agents, &mut next_agent_id) {
+    // Pass the config reference when calling
+    if let Err(e) = load_population_and_create_agents(&population_path, grid.width, grid.height, &mut grid, &mut agents, &mut next_agent_id, &config) {
         eprintln!("Failed to load population from '{}': {}", population_path, e);
         return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to load or process population file '{}': {}", population_path, e)}));
     }
@@ -205,6 +244,38 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
         println!("No DTM path provided in config. Skipping DTM loading.");
     }
 
+    // --- Load Siren Config (during init) ---
+    let (_grid_path, _population_path, tsunami_data_path_for_siren) = config.get_location_paths();
+    let siren_config_path = Path::new(&tsunami_data_path_for_siren)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("siren_config.json"); // Look for JSON file
+
+    let loaded_siren_config: Option<SirenConfig> = match File::open(&siren_config_path) {
+        Ok(file) => {
+            let reader = BufReader::new(file);
+            match serde_json::from_reader(reader) {
+                Ok(config) => {
+                    println!("Siren config loaded during init: {:?}", config);
+                    Some(config)
+                }
+                Err(e) => {
+                    eprintln!("Error parsing siren config file {:?}: {}. Siren disabled.", siren_config_path, e);
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                println!("Siren config file {:?} not found. Siren disabled.", siren_config_path);
+            } else {
+                eprintln!("Error opening siren config file {:?}: {}. Siren disabled.", siren_config_path, e);
+            }
+            None
+        }
+    };
+    // --- End Load Siren Config ---
+
     // Create Model
     let mut model = Model { grid, agents, dead_agents: 0, dead_agent_types: Vec::new() };
 
@@ -221,6 +292,7 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
     app_state.model = Some(model); // Store the final model
     app_state.state.is_running = true; // Mark as running
     app_state.state.is_completed = false;
+    app_state.state.siren_config = loaded_siren_config; // Store loaded siren config in state
     let final_agent_count = app_state.model.as_ref().unwrap().agents.len();
     // Export stats after model is stored
     if let Err(e) = export_agent_statistics(&app_state.model.as_ref().unwrap().agents) { eprintln!("Warning: Failed to export agent statistics: {}", e); }
@@ -236,18 +308,36 @@ async fn run_step(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     if app_state.state.is_completed { return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation already completed"})); }
 
     let current_step = app_state.state.current_step;
-    // Get delays from config
-    let agent_reaction_delay = app_state.config.agent_reaction_delay;
+    // Get tsunami delay from config
     let tsunami_delay = app_state.config.tsunami_delay;
 
     // Determine if tsunami is active for this step
     let is_tsunami_active = current_step >= tsunami_delay;
 
     let tsunami_index = app_state.state.tsunami_index;
+    // No longer need to extract siren_config separately, pass the whole config
+    // let siren_config = app_state.state.siren_config.clone();
+
+    // Clone config before borrowing model mutably
+    let config_clone = app_state.config.clone();
+    // Extract necessary config values and siren_config from state
+    let milling_min = app_state.config.milling_time_min;
+    let milling_max = app_state.config.milling_time_max;
+    let siren_prob = app_state.config.siren_effectiveness_probability;
+    let siren_config_opt = app_state.state.siren_config.clone(); // Get siren config from state
+
     let model = app_state.model.as_mut().unwrap();
 
-    // Call step with the new signature
-    model.step(current_step, agent_reaction_delay, is_tsunami_active, tsunami_index);
+    // Call step with the correct 7 arguments
+    model.step(
+        current_step,
+        is_tsunami_active,
+        tsunami_index,
+        siren_config_opt, // Pass Option<SirenConfig> from state
+        milling_min,
+        milling_max,
+        siren_prob,
+    );
 
     // Collect results
     let mut dead_agent_counts = DeadAgentTypeData::default();
@@ -294,10 +384,10 @@ async fn run_step(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     let should_advance_tsunami_index = is_tsunami_active
                                         && current_step >= tsunami_delay // Check if current step is at or past the delay
                                         && tsunami_data_len > 0 // Ensure there is tsunami data
-                                        && (current_step - tsunami_delay) % TSUNAMI_SPEED_TIME == 0; // Check interval relative to delay
+                                        && (current_step - tsunami_delay) % app_state.config.tsunami_speed_time == 0; // Check interval relative to delay using config
 
-    // Update state
-     app_state.state.is_tsunami = is_tsunami_active; // Update state flag based on comparison with config.tsunami_delay
+   // Update state
+    app_state.state.is_tsunami = is_tsunami_active; // Update state flag based on comparison with config.tsunami_delay
      if is_tsunami_active && should_advance_tsunami_index {
          if tsunami_index + 1 >= tsunami_data_len {
              should_complete_simulation = true; // End if last tsunami frame processed
@@ -315,16 +405,48 @@ async fn run_step(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
      app_state.state.dead_agents = dead_agents_count; // Update cumulative dead count in state
 
      // Check for completion based on max_steps or end of tsunami data
+     let mut just_completed = false; // Flag to check if completion happened this step
      if should_complete_simulation {
+         if !app_state.state.is_completed { just_completed = true; } // Mark completion if not already completed
          app_state.state.is_completed = true;
          app_state.state.is_running = false;
      } else if let Some(max_steps) = app_state.config.max_steps {
          if current_step + 1 >= max_steps {
+             if !app_state.state.is_completed { just_completed = true; } // Mark completion
              app_state.state.is_completed = true;
              app_state.state.is_running = false;
              println!("Reached max steps ({}) at step {}.", max_steps, current_step);
          }
      }
+
+     // --- Populate Agent Outcomes on Completion ---
+     if just_completed {
+         println!("Simulation completed at step {}. Logging agent outcomes...", current_step);
+         if let Some(model) = &app_state.model {
+             app_state.agent_outcomes = model.agents.iter().map(|agent| {
+                 let final_status = if agent.is_in_shelter {
+                     AgentFinalStatus::SafeInShelter
+                 } else {
+                     // Assume not alive means dead, otherwise status is undetermined if sim ends early
+                     if !agent.is_alive { AgentFinalStatus::Dead } else { AgentFinalStatus::Dead } // Defaulting to Dead if not in shelter for now
+                 };
+                 AgentOutcome {
+                     agent_id: agent.id,
+                     agent_type: agent.agent_type,
+                     initial_knowledge_level: agent.knowledge_level, // Note: This is current, not initial if modified
+                     initial_household_size: agent.household_size, // Note: This is current, not initial if modified
+                     final_status,
+                     final_step: current_step + 1,
+                     moved_by_siren: agent.moved_by_siren, // Log the step *after* completion check
+                 }
+             }).collect();
+             println!("Logged outcomes for {} agents.", app_state.agent_outcomes.len());
+         } else {
+             eprintln!("Error: Cannot log outcomes, model is missing.");
+         }
+     }
+     // --- End Populate Agent Outcomes ---
+
 
      // Increment step if not completed
      if !app_state.state.is_completed {
@@ -355,18 +477,36 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
         }
 
         let current_step = app_state.state.current_step;
-        // Get delays from config for this step
-        let agent_reaction_delay = app_state.config.agent_reaction_delay;
+        // Get tsunami delay from config for this step
         let tsunami_delay = app_state.config.tsunami_delay;
+
+    // No longer need to extract siren_config separately, pass the whole config
+    // let siren_config = app_state.state.siren_config.clone();
 
         // Determine if tsunami is active for this step
         let is_tsunami_active = current_step >= tsunami_delay;
 
         let tsunami_index = app_state.state.tsunami_index;
+        // Clone config before borrowing model mutably
+        let config_clone = app_state.config.clone();
+        // Extract necessary config values and siren_config from state
+        let milling_min = app_state.config.milling_time_min;
+        let milling_max = app_state.config.milling_time_max;
+        let siren_prob = app_state.config.siren_effectiveness_probability;
+        let siren_config_opt = app_state.state.siren_config.clone(); // Get siren config from state
+
         let model = app_state.model.as_mut().unwrap();
 
-        // Call step with the new signature
-        model.step(current_step, agent_reaction_delay, is_tsunami_active, tsunami_index);
+        // Call step with the correct 7 arguments
+        model.step(
+            current_step,
+            is_tsunami_active,
+            tsunami_index,
+            siren_config_opt, // Pass Option<SirenConfig> from state
+            milling_min,
+            milling_max,
+            siren_prob,
+        );
 
         // Collect results
         let mut dead_agent_counts = DeadAgentTypeData::default();
@@ -411,10 +551,10 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
         let should_advance_tsunami_index = is_tsunami_active
                                             && current_step >= tsunami_delay // Check if current step is at or past the delay
                                             && tsunami_data_len > 0 // Ensure there is tsunami data
-                                            && (current_step - tsunami_delay) % TSUNAMI_SPEED_TIME == 0; // Check interval relative to delay
+                                            && (current_step - tsunami_delay) % app_state.config.tsunami_speed_time == 0; // Check interval relative to delay using config
 
-        // Update state
-        app_state.state.is_tsunami = is_tsunami_active; // Update state flag based on comparison with config.tsunami_delay
+       // Update state
+       app_state.state.is_tsunami = is_tsunami_active; // Update state flag based on comparison with config.tsunami_delay
         if is_tsunami_active && should_advance_tsunami_index {
             if tsunami_index + 1 >= tsunami_data_len {
                 should_complete_simulation = true; // End if last tsunami frame processed
@@ -432,16 +572,25 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
         app_state.state.dead_agents = dead_agents_count; // Update cumulative dead count
 
         // Check for completion based on max_steps or end of tsunami data
+        let mut just_completed_multi = false; // Flag for multi-step run
         if should_complete_simulation {
+            if !app_state.state.is_completed { just_completed_multi = true; }
             app_state.state.is_completed = true;
             app_state.state.is_running = false;
         } else if let Some(max_steps) = app_state.config.max_steps {
             if current_step + 1 >= max_steps {
+                if !app_state.state.is_completed { just_completed_multi = true; }
                 app_state.state.is_completed = true;
                 app_state.state.is_running = false;
                  println!("Reached max steps ({}) during run_steps at step {}.", max_steps, current_step);
             }
         }
+
+        // --- Populate Agent Outcomes on Completion (within loop) ---
+        // REMOVED: Outcome logging moved outside the loop to avoid borrow issues
+        // if just_completed_multi { ... }
+        // --- End Populate Agent Outcomes ---
+
 
         // Increment step if not completed
         if !app_state.state.is_completed {
@@ -459,7 +608,38 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
         drop(app_state); // Release lock for this iteration
     } // End loop for steps_to_run
 
-    let final_state = data.lock().unwrap().state.clone(); // Get final state after loop
+    // --- Populate Agent Outcomes AFTER the loop ---
+    let mut app_state = data.lock().unwrap(); // Re-acquire lock
+    if app_state.state.is_completed && app_state.agent_outcomes.is_empty() { // Log only if completed and not already logged
+        println!("Simulation completed during run_steps. Logging agent outcomes...");
+        if let Some(model) = &app_state.model {
+            let final_step = app_state.state.current_step; // Use the final step from state
+            app_state.agent_outcomes = model.agents.iter().map(|agent| {
+                let final_status = if agent.is_in_shelter {
+                    AgentFinalStatus::SafeInShelter
+                } else {
+                    if !agent.is_alive { AgentFinalStatus::Dead } else { AgentFinalStatus::Dead } // Defaulting to Dead if not in shelter
+                };
+                AgentOutcome {
+                    agent_id: agent.id,
+                    agent_type: agent.agent_type,
+                    initial_knowledge_level: agent.knowledge_level,
+                    initial_household_size: agent.household_size,
+                    final_status,
+                    final_step, // Use the captured final step
+                    moved_by_siren: agent.moved_by_siren, // Include the new field
+                }
+            }).collect();
+            println!("Logged outcomes for {} agents.", app_state.agent_outcomes.len());
+        } else {
+            eprintln!("Error: Cannot log outcomes post-loop, model is missing.");
+        }
+    }
+    // --- End Populate Agent Outcomes ---
+
+    let final_state = app_state.state.clone(); // Get final state after potential logging
+    drop(app_state); // Release lock before returning response
+
     HttpResponse::Ok().json(json!({"status": "ok", "steps_requested": steps_to_run, "steps_executed": steps_executed_count, "simulation_state": final_state, "results": results}))
 }
 
@@ -468,6 +648,7 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
 async fn get_status(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     let app_state = data.lock().unwrap();
     let is_initialized = app_state.model.is_some();
+    // Include siren config in status response
     HttpResponse::Ok().json(json!({"status": "ok", "is_initialized": is_initialized, "simulation_state": app_state.state, "agents_count": app_state.model.as_ref().map(|m| m.agents.len()), "dead_agents": app_state.model.as_ref().map(|m| m.dead_agents)}))
 }
 
@@ -485,9 +666,14 @@ async fn export_results(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder
 async fn reset_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     let mut app_state = data.lock().unwrap();
     app_state.model = None;
-    app_state.state = SimulationState::default();
+    // Reset state, clearing siren time
+    app_state.state = SimulationState {
+        siren_config: None, // Clear siren config on reset
+        ..SimulationState::default()
+    };
     app_state.death_json_counter = Vec::new();
     app_state.shelter_json_counter = Vec::new();
+    app_state.agent_outcomes = Vec::new(); // Clear outcomes on reset
     println!("Simulation reset.");
     HttpResponse::Ok().json(json!({"status": "ok", "message": "Simulation reset"}))
 }
@@ -495,6 +681,8 @@ async fn reset_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Respond
 #[get("/export/geojson")]
 async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     use serde_json::{json, Value};
+    use std::path::Path;
+    
     let app_state = data.lock().unwrap();
     if app_state.model.is_none() { return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation not initialized (agent data unavailable)"})); }
 
@@ -502,6 +690,7 @@ async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Res
     let grid = &model.grid;
     let current_step = app_state.state.current_step;
     let location = &app_state.config.location;
+    let config = app_state.config.clone();
     let epsg_code = match location.as_str() { "pacitan" | "sample" => "EPSG:32749", _ => "EPSG:32750" };
 
     // Create features for each individual agent
@@ -522,8 +711,12 @@ async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Res
                 "properties": {
                     "id": agent.id, // Include agent ID
                     "agent_type": agent.agent_type.to_string(), // Include agent type
+                    "knowledge_level": agent.knowledge_level,
+                    "household_size": agent.household_size,
+                    "has_decided_to_evacuate": agent.has_decided_to_evacuate,
+                    "moved_by_siren": agent.moved_by_siren,
+                    "is_in_shelter": agent.is_in_shelter,
                     "timestamp": current_step
-                    // Add other properties if needed later
                 }
             })
         })
@@ -535,16 +728,95 @@ async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Res
             "type": "name",
             "properties": {"name": epsg_code}
         },
+        "metadata": {
+            "simulation_step": current_step,
+            "location": location,
+            "grid_cellsize": grid.cellsize,
+            "grid_width": grid.width,
+            "grid_height": grid.height
+        },
         "features": features
     });
+    
+    // 3. Define output file path
+    let output_dir = Path::new(&config.output_path);
+    let file_path = output_dir.join("agent_geojson.json");
 
-    HttpResponse::Ok().content_type("application/geo+json").json(geojson)
+    // Release the lock before performing file I/O
+    drop(app_state);
+
+    // Ensure output directory exists
+    if let Err(e) = std::fs::create_dir_all(output_dir) {
+        eprintln!("Error creating output directory {:?}: {}", output_dir, e);
+        return HttpResponse::InternalServerError().json(json!({
+            "status": "error",
+            "message": format!("Failed to create output directory: {}", e)
+        }));
+    }
+
+    // 4. Write GeoJSON to file
+    match serde_json::to_string_pretty(&geojson) {
+        Ok(json_string) => {
+            match std::fs::write(&file_path, json_string) {
+                Ok(_) => {
+                    println!("Agent GeoJSON successfully exported to {:?}", file_path);
+                    // 5. Return success response with both file path info and the GeoJSON content
+                    HttpResponse::Ok().content_type("application/geo+json").json(json!({
+                        "status": "ok",
+                        "message": format!("Agent GeoJSON exported successfully to {:?}", file_path),
+                        "file_path": file_path.to_string_lossy(),
+                        "geojson": geojson
+                    }))
+                }
+                Err(e) => {
+                    eprintln!("Error writing agent GeoJSON to file {:?}: {}", file_path, e);
+                    // 6. Return error response but still include the GeoJSON that would have been saved
+                    HttpResponse::InternalServerError().json(json!({
+                        "status": "error",
+                        "message": format!("Failed to write agent GeoJSON to file: {}", e),
+                        "geojson": geojson
+                    }))
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error serializing agent GeoJSON: {}", e);
+            // 7. Return error response
+            HttpResponse::InternalServerError().json(json!({
+                "status": "error",
+                "message": format!("Failed to serialize agent GeoJSON: {}", e)
+            }))
+        }
+    }
 }
 
 #[get("/grid/geojson")]
 async fn export_grid_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     use serde_json::{json, Value};
     let app_state = data.lock().unwrap();
+// --- New Handler for Agent Outcomes ---
+#[get("/export/agent_outcomes")]
+async fn export_agent_outcomes(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
+    let app_state = data.lock().unwrap();
+    // Check if outcomes have been generated (i.e., simulation completed at least once)
+    if app_state.agent_outcomes.is_empty() {
+        // Return empty list or a specific message if simulation hasn't completed
+        return HttpResponse::Ok().json(json!({
+            "status": "ok",
+            "message": "No agent outcomes logged yet. Run a simulation to completion.",
+            "outcomes": []
+        }));
+    }
+    // Clone the outcomes and return
+    let outcomes_clone = app_state.agent_outcomes.clone();
+    drop(app_state); // Release lock
+    HttpResponse::Ok().json(json!({
+        "status": "ok",
+        "message": "Agent outcomes exported.",
+        "outcomes": outcomes_clone
+    }))
+}
+// --- End New Handler ---
     if app_state.model.is_none() { return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation not initialized (grid data unavailable)"})); }
 
     let model = app_state.model.as_ref().unwrap();
@@ -569,6 +841,81 @@ async fn export_grid_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Resp
     let geojson = json!({"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": epsg_code}}, "features": features});
     HttpResponse::Ok().content_type("application/geo+json").json(geojson)
 }
+
+// --- New Handler for Agent Outcomes ---
+#[get("/export/agent_outcomes")]
+async fn export_agent_outcomes(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
+    let app_state = data.lock().unwrap();
+
+    // 1. Retrieve config and outcomes
+    let config = app_state.config.clone();
+    let agent_outcomes = app_state.agent_outcomes.clone();
+
+    // Check if outcomes have been generated
+    if agent_outcomes.is_empty() {
+        return HttpResponse::Ok().json(json!({
+            "status": "ok",
+            "message": "No agent outcomes logged yet. Run a simulation to completion.",
+            "outcomes": []
+        }));
+    }
+
+    // 2. Create JSON object
+    let output_data = json!({
+        "simulation_config": config,
+        "agent_outcomes": agent_outcomes
+    });
+
+    // 3. Define output file path
+    let output_dir = Path::new(&config.output_path);
+    let file_path = output_dir.join("agent_outcomes.json");
+
+    // Release the lock before performing file I/O
+    drop(app_state);
+
+    // Ensure output directory exists
+    if let Err(e) = std::fs::create_dir_all(output_dir) {
+        eprintln!("Error creating output directory {:?}: {}", output_dir, e);
+        return HttpResponse::InternalServerError().json(json!({
+            "status": "error",
+            "message": format!("Failed to create output directory: {}", e)
+        }));
+    }
+
+    // 4. Write JSON object to file
+    match serde_json::to_string_pretty(&output_data) {
+        Ok(json_string) => {
+            match std::fs::write(&file_path, json_string) {
+                Ok(_) => {
+                    println!("Agent outcomes successfully exported to {:?}", file_path);
+                    // 5. Return success response
+                    HttpResponse::Ok().json(json!({
+                        "status": "ok",
+                        "message": format!("Agent outcomes exported successfully to {:?}", file_path),
+                        "file_path": file_path.to_string_lossy()
+                    }))
+                }
+                Err(e) => {
+                    eprintln!("Error writing agent outcomes to file {:?}: {}", file_path, e);
+                    // 6. Return error response
+                    HttpResponse::InternalServerError().json(json!({
+                        "status": "error",
+                        "message": format!("Failed to write agent outcomes to file: {}", e)
+                    }))
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error serializing agent outcomes to JSON: {}", e);
+            // 6. Return error response
+            HttpResponse::InternalServerError().json(json!({
+                "status": "error",
+                "message": format!("Failed to serialize agent outcomes to JSON: {}", e)
+            }))
+        }
+    }
+}
+// --- End New Handler ---
 
 #[get("/tsunami/geojson")]
 async fn export_tsunami_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
@@ -661,6 +1008,7 @@ pub async fn start_api_server(port: u16) -> std::io::Result<()> {
         model: None,
         death_json_counter: Vec::new(),
         shelter_json_counter: Vec::new(),
+        agent_outcomes: Vec::new(), // Initialize the new vector
     }));
 
     HttpServer::new(move || {
@@ -689,6 +1037,7 @@ pub async fn start_api_server(port: u16) -> std::io::Result<()> {
                     .service(export_tsunami_geojson)
                     .service(export_grid_costs)
                     .service(get_agent_info)
+                    .service(export_agent_outcomes) // Register the new endpoint
                     .service(reset_simulation)
             )
     })

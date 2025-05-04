@@ -16,6 +16,7 @@ import os
 import numpy as np
 import argparse
 import random # Import random for shuffling
+import json # Import json for JSON output
 
 # Ensure the output directory exists
 DATA_DIR = "./data_sample"
@@ -291,6 +292,30 @@ def create_dtm_grid(nrows, ncols, output_path="./data_sample/sample_dtm.asc"):
 # --- End DTM Generation ---
 
 
+# --- New Siren Config Generation ---
+def create_siren_config(nrows, ncols, output_path="./data_sample/siren_config.json", activation_step=50):
+    """Creates a JSON file with siren activation time, coordinates, and radius."""
+    # Example: Place siren near the center and radius covering roughly half the grid width
+    siren_x = ncols // 2
+    siren_y = nrows // 2
+    siren_radius = max(1, ncols // 4) # Radius in grid cells
+
+    config_data = {
+        "activation_step": activation_step,
+        "x": siren_x,
+        "y": siren_y,
+        "radius_cells": siren_radius
+    }
+
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, indent=4)
+        print(f"Created siren config file at {output_path}: {config_data}")
+    except IOError as e:
+        print(f"Error creating siren config file {output_path}: {e}")
+# --- End Siren Config Generation ---
+
+
 def create_mock_tsunami_data(env_grid, num_frames=5, output_dir="./data_sample/tsunami_ascii_sample"):
     """Create mock tsunami data frames based on the environment grid dimensions."""
     # Use dimensions and metadata from the environment grid
@@ -365,6 +390,9 @@ if __name__ == "__main__":
     # 4. Generate mock tsunami data based on the environment grid dimensions and args
     create_mock_tsunami_data(environment_grid, num_frames=args.frames)
 
+    # 5. Generate siren config data
+    create_siren_config(args.rows, args.cols) # Pass grid dimensions
+
     print("\nSample data generation complete!")
     # Provide clear paths to the generated files
     env_grid_path = os.path.join(DATA_DIR, "sample_grid.asc")
@@ -375,3 +403,6 @@ if __name__ == "__main__":
     print(f"Agent grid saved to: {agent_grid_path}")
     print(f"DTM grid saved to: {dtm_grid_path}") # Print DTM path
     print(f"Tsunami frames saved to: {tsunami_dir_path}/")
+    siren_config_path = os.path.join(DATA_DIR, "siren_config.json")
+
+    print(f"Siren config file saved to: {siren_config_path}")

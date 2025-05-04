@@ -43,12 +43,15 @@ pub struct Agent {
     pub is_in_shelter: bool, // Flag to indicate if agent is currently in a shelter cell
     // --- Added for Milling Time (Paper 4) ---
     pub milling_steps_remaining: u32, // Steps remaining for pre-evacuation delay/milling
+    // --- Added for Siren Influence Tracking ---
+    pub moved_by_siren: bool, // Flag to indicate if the agent's evacuation decision was overridden by the siren
 }
 
 pub const BASE_SPEED: f64 = 2.66;
 
 impl Agent {
-    pub fn new(id: usize, x: u32, y: u32, agent_type: AgentType, is_on_road: bool, ) -> Self {
+    // Add config parameter to the new function
+    pub fn new(id: usize, x: u32, y: u32, agent_type: AgentType, is_on_road: bool, config: &crate::api::SimulationConfig) -> Self {
         let speed = match agent_type {
             AgentType::Child => 0.8 * BASE_SPEED,
             AgentType::Teen => 1.0 * BASE_SPEED,
@@ -65,12 +68,14 @@ impl Agent {
             is_on_road,
             agent_type,
             is_alive: true,
-            knowledge_level: thread_rng().gen_range(10..=90),
-            household_size: thread_rng().gen_range(1..=5),
+            // Use config ranges for random generation
+            knowledge_level: thread_rng().gen_range(config.knowledge_level_min..=config.knowledge_level_max),
+            household_size: thread_rng().gen_range(config.household_size_min..=config.household_size_max),
             has_decided_to_evacuate: false,
             evacuation_trigger_time: None,
             is_in_shelter: false,
             milling_steps_remaining: 0,
+            moved_by_siren: false, // Initialize to false
         }
     }
 }
@@ -110,3 +115,24 @@ pub struct DeadAgentsData {
     pub step: u32,
     pub dead_agents: usize,
 }
+
+// --- Structs and Enums for Outcome Logging ---
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub enum AgentFinalStatus {
+    Dead,
+    SafeInShelter,
+    // Could add other statuses later if needed, e.g., AliveOutsideShelter
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct AgentOutcome {
+    pub agent_id: usize,
+    pub agent_type: AgentType,
+    pub initial_knowledge_level: u8, // Assuming we want the initial value
+    pub initial_household_size: u8, // Assuming we want the initial value
+    pub final_status: AgentFinalStatus,
+    pub final_step: u32, // Step of death or reaching shelter, or simulation end step
+    pub moved_by_siren: bool, // Flag to indicate if the agent's evacuation decision was overridden by the siren
+}
+// --- End Structs and Enums for Outcome Logging ---

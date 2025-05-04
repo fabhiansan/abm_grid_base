@@ -1,5 +1,7 @@
 mod game;
 mod api;
+use crate::api::SirenConfig; // Import SirenConfig from api module
+
 
 use game::agent::{/* Removed Agent */ AgentType};
 use game::game::Model;
@@ -13,9 +15,12 @@ use std::path::{Path, PathBuf};
 use std::env;
 use rayon::prelude::*;
 use std::fs; // Removed path as it's implicitly imported with fs
+use std::io::{BufReader, ErrorKind}; // Add ErrorKind
+
+
 
 // Removed: const TSUNAMI_DELAY: u32 = 5;
-const TSUNAMI_SPEED_TIME: u32 = 60; // Keep this for now, controls tsunami data index advancement speed
+// Removed: const TSUNAMI_SPEED_TIME: u32 = 60; // Now configurable via SimulationConfig
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ShelterAgentTypeData {
@@ -55,6 +60,8 @@ struct AgentStatistics {
     total_agents: usize,
     agent_types: HashMap<String, usize>,
 }
+
+// Removed local SirenConfig definition
 
 // --- Simulation Result Struct ---
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -249,6 +256,8 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
 
     let (grid_path, population_path, tsunami_data_path) = config.get_location_paths();
     // Access dtm_path field directly, clone the Option<String>
+    let siren_config_path = Path::new(&tsunami_data_path).parent().unwrap_or_else(|| Path::new(".")).join("siren_config.json"); // Look for JSON
+
     let dtm_path = config.dtm_path.clone().unwrap_or_default();
 
     println!("Using location: {}", config.location);
@@ -257,7 +266,7 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
     println!("Tsunami data path: {}", tsunami_data_path);
     println!("DTM path: {}", dtm_path);
     println!("Tsunami Delay: {}", config.tsunami_delay);
-    println!("Agent Reaction Delay: {}", config.agent_reaction_delay);
+    // Removed Agent Reaction Delay log (again, ensure it's gone)
 
 
     // Load grid and initial agents
@@ -274,6 +283,7 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
         &mut grid,
         &mut agents,
         &mut next_agent_id,
+        config, // Pass the config reference
     ).expect("Failed to populate grid");
     println!("Population loaded, total agents: {}", agents.len());
 
@@ -332,6 +342,15 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
     }
 
 
+    // Load siren config
+    let siren_config = load_siren_config(&siren_config_path.to_string_lossy())?;
+    if let Some(config) = &siren_config {
+        println!("Siren config loaded: {:?}", config);
+    } else {
+        println!("Siren is disabled (no config file or error reading).");
+    }
+
+
     // Initialize the model
     let mut model = Model {
         grid,
@@ -362,11 +381,11 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
 
         // Advance tsunami data index periodically after tsunami becomes active
         if is_tsunami_active && tsunami_len > 0 {
-             // Advance index based on TSUNAMI_SPEED_TIME, but only if tsunami is active
-             if current_step > config.tsunami_delay && (current_step - config.tsunami_delay) % TSUNAMI_SPEED_TIME == 0 {
+             // Advance index based on config.tsunami_speed_time, but only if tsunami is active
+             if current_step > config.tsunami_delay && (current_step - config.tsunami_delay) % config.tsunami_speed_time == 0 {
                  if tsunami_data_index < tsunami_len - 1 {
                      tsunami_data_index += 1;
-                     // println!("Advancing to tsunami index: {}", tsunami_data_index); // Can be verbose
+                     // println!("Advancing to tsunami index: {} using speed {}", tsunami_data_index, config.tsunami_speed_time); // Can be verbose
                  } else {
                      // Optional: Stop simulation if last tsunami step is reached and no agents are moving?
                      // Or just keep using the last tsunami frame. For now, keep using last frame.
@@ -379,11 +398,19 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
 
 
         // Perform simulation step
-        // Pass the relevant delays and current tsunami index to the model step
-        model.step(current_step, config.agent_reaction_delay, is_tsunami_active, tsunami_data_index);
+        // Pass the current tsunami index and relevant config values to the model step
+        model.step(
+            current_step,
+            is_tsunami_active,
+            tsunami_data_index,
+            siren_config.clone(), // Pass Option<SirenConfig>
+            config.milling_time_min,
+            config.milling_time_max,
+            config.siren_effectiveness_probability,
+        );
 
-        // --- Data Collection (every N steps, e.g., 30) ---
-        if current_step % 30 == 0 {
+        // --- Data Collection (every config.data_collection_interval steps) ---
+        if current_step % config.data_collection_interval == 0 {
             println!("Step: {}, Dead Agents: {}", current_step, model.dead_agents); // Progress indicator
 
             // Collect agent positions for GeoJSON
@@ -445,7 +472,7 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
         // --- Check Simulation End Conditions ---
         // Example: Stop if all agents are dead or in shelters
         let active_agents = model.agents.iter().filter(|a| a.is_alive && !a.is_in_shelter).count();
-        if active_agents == 0 && current_step > config.agent_reaction_delay { // Ensure agents had a chance to react
+        if active_agents == 0 && current_step > 0 { // Ensure simulation ran at least one step before checking completion (check remains valid)
             println!("Simulation ended: No more active agents outside shelters at step {}.", current_step);
             is_playing = false;
         }
@@ -556,6 +583,7 @@ pub fn load_population_and_create_agents(
     grid: &mut Grid,
     agents: &mut Vec<crate::game::agent::Agent>,
     next_agent_id: &mut usize,
+    config: &crate::api::SimulationConfig, // Add config parameter
 ) -> std::io::Result<()> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
@@ -615,12 +643,14 @@ pub fn load_population_and_create_agents(
                         let is_on_road = grid.terrain[y][x] == Terrain::Road;
                         let agent_type = crate::game::agent::AgentType::random(); // Assign random type
 
-                        let agent = crate::game::agent::Agent::new( // Removed mut
+                        // Pass the config reference to Agent::new
+                        let agent = crate::game::agent::Agent::new(
                             *next_agent_id,
                             x as u32,
                             y as u32,
                             agent_type,
                             is_on_road,
+                            config, // Pass config here
                         );
                         // agent.remaining_steps = agent.speed; // Agent::new likely handles this
 
@@ -636,6 +666,33 @@ pub fn load_population_and_create_agents(
     }
 
     Ok(())
+}
+
+
+
+// Helper function to read the siren config file
+fn load_siren_config(path: &str) -> io::Result<Option<crate::api::SirenConfig>> { // Update return type
+    match File::open(path) {
+        Ok(file) => {
+            let reader = BufReader::new(file);
+            match serde_json::from_reader(reader) {
+                Ok(config) => Ok(Some(config)),
+                Err(e) => {
+                    eprintln!("Warning: Failed to parse siren config file {}: {}. Siren disabled.", path, e);
+                    Ok(None) // Treat parse error as disabled
+                }
+            }
+        }
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound {
+                println!("Siren config file {} not found. Siren disabled.", path);
+                Ok(None) // File not found is expected, siren disabled
+            } else {
+                eprintln!("Warning: Failed to open siren config file {}: {}. Siren disabled.", path, e);
+                Ok(None) // Treat other errors as disabled for robustness
+            }
+        }
+    }
 }
 
 
@@ -875,7 +932,6 @@ fn main() -> io::Result<()> {
         // For now, use some default values.
         let mut config = api::SimulationConfig::default(); // Load defaults (location, paths)
         config.tsunami_delay = 100; // Example default
-        config.agent_reaction_delay = 50; // Example default
         config.max_steps = Some(1000); // Example max steps
 
         // You could add command-line argument parsing here to override defaults

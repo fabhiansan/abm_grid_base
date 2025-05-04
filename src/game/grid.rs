@@ -90,6 +90,9 @@ impl Grid {
         let mut dist = vec![vec![None; self.width as usize]; self.height as usize];
         let mut heap = BinaryHeap::new();
         const SQRT2: f64 = 1.41421356237; // Precompute sqrt(2)
+        // Penalty factor for uphill movement when calculating distance fields (similar to agent movement)
+        const DISTANCE_FIELD_UPHILL_PENALTY_FACTOR: f64 = 0.5;
+        const LAND_COST_MULTIPLIER: f64 = 2.0; // Make moving over land twice as costly as road/shelter
 
         // Initialize shelters with cost 0
         for &(x, y, _) in &self.shelters {
@@ -127,24 +130,30 @@ impl Grid {
                     // --- Calculate Move Cost based on Slope (conditionally) ---
                     let delta_d = if dx == 0 || dy == 0 { self.cellsize } else { self.cellsize * SQRT2 };
 
-                    let move_cost = if use_dtm && dtm.is_some() { // Check flag AND DTM existence
+                    let mut move_cost = delta_d; // Start with base distance cost
+
+                    if use_dtm && dtm.is_some() { // Check flag AND DTM existence
                         let dtm_layer = dtm.unwrap(); // Safe to unwrap due to is_some() check
                         let current_elev = dtm_layer.get(y_usize).and_then(|row| row.get(x_usize)).copied().unwrap_or(0.0);
-                        let next_elev = dtm_layer.get(ny_usize).and_then(|row| row.get(nx_usize)).copied().unwrap_or(0.0);
+                        let next_elev = dtm_layer.get(ny_usize).and_then(|row| row.get(nx_usize)).copied().unwrap_or(current_elev); // Use current if next is missing
                         let delta_z = next_elev - current_elev;
-                        let slope = if delta_d > 1e-6 { delta_z / delta_d } else { 0.0 };
 
-                        // Slope Cost Factor: Exponential penalty for uphill, capped
-                        let slope_factor = if slope > 0.0 {
-                            let capped_exp_arg = (slope * 5.0).min(10.0);
-                            1.0 + capped_exp_arg.exp() - 1.0
-                        } else {
-                            1.0
-                        };
-                        delta_d * slope_factor // Apply slope factor
-                    } else {
-                        delta_d // Simple distance if use_dtm is false or DTM not loaded
-                    };
+                        // Apply uphill penalty similar to agent movement cost
+                        if delta_z > 0.0 {
+                            let uphill_penalty = delta_z * DISTANCE_FIELD_UPHILL_PENALTY_FACTOR;
+                            move_cost += uphill_penalty;
+                        }
+                        // Optional: Add a small cost benefit for downhill movement?
+                        // else if delta_z < 0.0 {
+                        //     move_cost *= 0.9; // Example: 10% cheaper for downhill
+                        // }
+                    }
+                    // If not using DTM or DTM not loaded, move_cost remains delta_d
+                    // --- Apply Terrain Cost Multiplier ---
+                    let terrain_neighbor = &self.terrain[ny_usize][nx_usize];
+                    if *terrain_neighbor == Terrain::Land {
+                        move_cost *= LAND_COST_MULTIPLIER;
+                    }
                     // --- End Cost Calculation ---
 
                     let next_total_cost = cost + move_cost;
@@ -169,6 +178,10 @@ impl Grid {
         let mut dist = vec![vec![None; self.width as usize]; self.height as usize];
         let mut heap = BinaryHeap::new();
         const SQRT2: f64 = 1.41421356237;
+        // Re-declare constant for this function scope (or move to module level)
+        const DISTANCE_FIELD_UPHILL_PENALTY_FACTOR: f64 = 0.5;
+        // Re-declare or move to module scope
+        const LAND_COST_MULTIPLIER: f64 = 2.0; // Make moving over land twice as costly as road
 
         // Initialize road cells with cost 0
         for y in 0..self.height as usize {
@@ -206,24 +219,30 @@ impl Grid {
                     // --- Calculate Move Cost based on Slope (conditionally) ---
                     let delta_d = if dx == 0 || dy == 0 { self.cellsize } else { self.cellsize * SQRT2 };
 
-                    let move_cost = if use_dtm && dtm.is_some() { // Check flag AND DTM existence
+                    let mut move_cost = delta_d; // Start with base distance cost
+
+                    if use_dtm && dtm.is_some() { // Check flag AND DTM existence
                         let dtm_layer = dtm.unwrap(); // Safe to unwrap due to is_some() check
                         let current_elev = dtm_layer.get(y_usize).and_then(|row| row.get(x_usize)).copied().unwrap_or(0.0);
-                        let next_elev = dtm_layer.get(ny_usize).and_then(|row| row.get(nx_usize)).copied().unwrap_or(0.0);
+                        let next_elev = dtm_layer.get(ny_usize).and_then(|row| row.get(nx_usize)).copied().unwrap_or(current_elev); // Use current if next is missing
                         let delta_z = next_elev - current_elev;
-                        let slope = if delta_d > 1e-6 { delta_z / delta_d } else { 0.0 };
 
-                        // Slope Cost Factor: Exponential penalty for uphill, capped
-                        let slope_factor = if slope > 0.0 {
-                            let capped_exp_arg = (slope * 5.0).min(10.0);
-                            1.0 + capped_exp_arg.exp() - 1.0
-                        } else {
-                            1.0
-                        };
-                        delta_d * slope_factor // Apply slope factor
-                    } else {
-                        delta_d // Simple distance if use_dtm is false or DTM not loaded
-                    };
+                        // Apply uphill penalty similar to agent movement cost
+                        if delta_z > 0.0 {
+                            let uphill_penalty = delta_z * DISTANCE_FIELD_UPHILL_PENALTY_FACTOR;
+                            move_cost += uphill_penalty;
+                        }
+                        // Optional: Add a small cost benefit for downhill movement?
+                        // else if delta_z < 0.0 {
+                        //     move_cost *= 0.9; // Example: 10% cheaper for downhill
+                        // }
+                    }
+                    // If not using DTM or DTM not loaded, move_cost remains delta_d
+                    // --- Apply Terrain Cost Multiplier ---
+                    let terrain_neighbor = &self.terrain[ny_usize][nx_usize];
+                    if *terrain_neighbor == Terrain::Land {
+                        move_cost *= LAND_COST_MULTIPLIER;
+                    }
                     // --- End Cost Calculation ---
 
                     let next_total_cost = cost + move_cost;

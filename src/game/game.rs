@@ -19,7 +19,17 @@ pub struct Model {
 
 impl Model {
     // Updated signature to include agent_reaction_delay and use clearer names
-    pub fn step(&mut self, current_step: u32, agent_reaction_delay: u32, is_tsunami_active: bool, tsunami_data_index: usize) {
+    // Updated signature to accept specific config values + original siren_config
+    pub fn step(
+        &mut self,
+        current_step: u32,
+        is_tsunami_active: bool,
+        tsunami_data_index: usize,
+        siren_config: Option<crate::api::SirenConfig>, // Back to Option<SirenConfig>
+        milling_time_min: u32, // Added specific config param
+        milling_time_max: u32, // Added specific config param
+        siren_effectiveness_probability: f32, // Added specific config param
+    ) {
         let mut dead_agents_this_step = 0;
 
         // Apply tsunami effects if it's active and data exists for the current index
@@ -109,44 +119,76 @@ impl Model {
 
         let mut rng = thread_rng(); // Keep using imported thread_rng as it's common practice
 
-        // --- Trigger, Milling, and Decision Logic ---
-        if current_step >= agent_reaction_delay {
-            for agent in &mut self.agents {
-                 if !agent.is_alive { continue; } // Skip dead agents
+        // --- Trigger, Milling, and Decision Logic (agent_reaction_delay removed) ---
+        // Agents can now trigger/mill/decide from step 0 onwards.
+        for agent in &mut self.agents {
+             if !agent.is_alive { continue; } // Skip dead agents
 
-                // Trigger: Mark when agent *could* start reacting (if not already triggered)
-                if agent.evacuation_trigger_time.is_none() {
-                    agent.evacuation_trigger_time = Some(current_step); // Record the step they *could* react
+            // Trigger: Mark when agent *could* start reacting (if not already triggered)
+            // This now happens potentially from step 0 (Reverted to original behavior)
+            if agent.evacuation_trigger_time.is_none() {
+                agent.evacuation_trigger_time = Some(current_step); // Record the step they *could* react
 
-                    // --- Assign Milling Time based on household_size ---
-                    const BASE_MILLING_DELAY: u32 = 15; // Base delay
-                    const EXTRA_MILLING_PER_MEMBER: u32 = 10; // Extra delay per member > 1
-                    let extra_delay = agent.household_size.saturating_sub(1) as u32 * EXTRA_MILLING_PER_MEMBER;
-                    agent.milling_steps_remaining = BASE_MILLING_DELAY + extra_delay;
-                    // println!("Agent {} triggered, assigned milling time: {}", agent.id, agent.milling_steps_remaining); // Debug
-                }
+                // --- Assign Milling Time based on passed config range ---
+                agent.milling_steps_remaining = rng.gen_range(milling_time_min..=milling_time_max);
+                // println!("Agent {} triggered at step {}, assigned milling time: {} (Range: {}-{})", agent.id, current_step, agent.milling_steps_remaining, milling_time_min, milling_time_max); // Debug
+            }
 
-                // Milling Countdown: If triggered and milling, decrement counter.
-                // Agent does not decide or move while milling.
-                if agent.milling_steps_remaining > 0 {
-                    agent.milling_steps_remaining -= 1;
-                    continue; // Skip decision and movement for this agent this step
-                }
+            // *** SIREN OVERRIDE LOGIC (Now comes first, can override milling) ***
+            let mut is_agent_affected_by_siren = false;
+            if !agent.has_decided_to_evacuate && agent.evacuation_trigger_time.is_some() {
+                // Use the passed siren_config Option
+                if let Some(siren_cfg) = &siren_config {
+                    // Check if siren is active based on time
+                    if current_step >= siren_cfg.activation_step {
+                        // Calculate distance squared in grid cells (cheaper than sqrt)
+                        let dx = agent.x as i64 - siren_cfg.x as i64; // Use siren_cfg
+                        let dy = agent.y as i64 - siren_cfg.y as i64; // Use siren_cfg
+                        let dist_sq = (dx * dx + dy * dy) as f64;
+                        let radius_sq = (siren_cfg.radius_cells as f64) * (siren_cfg.radius_cells as f64); // Use siren_cfg
 
-                // Decision: Decide once, only after reaction delay AND milling time is over.
-                if agent.evacuation_trigger_time.is_some() && agent.milling_steps_remaining == 0 && !agent.has_decided_to_evacuate {
-                    let knowledge_factor = agent.knowledge_level as f32 / 100.0;
-                    let household_factor = 1.0 - ((agent.household_size.saturating_sub(1)) as f32 * 0.05);
-                    let evacuation_probability = (knowledge_factor * household_factor).clamp(0.0, 1.0);
-
-                    if rng.gen_bool(evacuation_probability as f64) {
-                        agent.has_decided_to_evacuate = true;
-                        // println!("Agent {} decided to evacuate (Prob: {:.2})", agent.id, evacuation_probability); // Debug
-                    } else {
-                        // Agent decided NOT to evacuate (for now, maybe reconsider later?)
-                        // println!("Agent {} decided NOT to evacuate (Prob: {:.2})", agent.id, evacuation_probability); // Debug
-                        // Consider adding logic here if agents might reconsider later
+                        // Check if agent is within radius
+                        if dist_sq <= radius_sq {
+                            is_agent_affected_by_siren = true;
+                        }
                     }
+                }
+
+                if is_agent_affected_by_siren {
+                    // Check effectiveness probability using passed config value
+                    if rng.gen_bool(siren_effectiveness_probability as f64) {
+                        agent.has_decided_to_evacuate = true; // Override decision due to siren
+                        agent.moved_by_siren = true; // Set flag as decision was overridden by siren
+                        agent.milling_steps_remaining = 0; // Important: Reset milling time when siren is effective
+                        // println!("Agent {} forced to evacuate by siren (Effective Prob: {:.2}) at step {}", agent.id, siren_effectiveness_probability, current_step); // Debug
+                    } else {
+                        // println!("Agent {} ignored siren (Ineffective Prob: {:.2}) at step {}", agent.id, 1.0 - siren_effectiveness_probability, current_step); // Debug
+                    }
+                }
+            }
+            // *** END SIREN OVERRIDE LOGIC ***
+
+            // Milling Countdown: If triggered and milling, decrement counter.
+            // Only continue milling if not overridden by siren
+            if !agent.moved_by_siren && agent.milling_steps_remaining > 0 {
+                agent.milling_steps_remaining -= 1;
+                continue; // Skip decision and movement for this agent this step
+            }
+
+            // Decision: Decide once, only after milling time is over and if not already decided by siren
+            if agent.evacuation_trigger_time.is_some() && 
+               agent.milling_steps_remaining == 0 && 
+               !agent.has_decided_to_evacuate {
+                let knowledge_factor = agent.knowledge_level as f32 / 100.0;
+                let household_factor = 1.0 - ((agent.household_size.saturating_sub(1)) as f32 * 0.05);
+                let evacuation_probability = (knowledge_factor * household_factor).clamp(0.0, 1.0);
+
+                if rng.gen_bool(evacuation_probability as f64) {
+                    agent.has_decided_to_evacuate = true;
+                    // println!("Agent {} decided to evacuate (Prob: {:.2})", agent.id, evacuation_probability); // Debug
+                } else {
+                    // Agent decided NOT to evacuate initially
+                    // println!("Agent {} decided NOT to evacuate initially (Prob: {:.2})", agent.id, evacuation_probability); // Debug
                 }
             }
         }
@@ -322,7 +364,11 @@ impl Model {
         let mut rng = thread_rng(); // Keep using imported thread_rng
         let dirs = [ (0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1) ];
         const SQRT2: f64 = 1.41421356237;
-        const UPHILL_INCENTIVE_FACTOR: f64 = 1.0;
+        // Removed UPHILL_INCENTIVE_FACTOR as it was causing incoherence.
+        // We will use UPHILL_SPEED_PENALTY_FACTOR from the step function's scope implicitly
+        // by replicating the penalty calculation here.
+        const HEURISTIC_WEIGHT: f64 = 10.0; // How strongly to prioritize reducing distance to goal
+        const EXPLORATION_PROBABILITY: f64 = 0.1; // Chance to pick a non-optimal move to escape local optima
 
         let mut potential_moves: Vec<(f64, u32, u32)> = Vec::new();
 
@@ -352,30 +398,48 @@ impl Model {
             if *terrain_next == Terrain::Blocked || reserved.contains(&(nx, ny)) { continue; }
 
             let delta_d = if dx == 0 || dy == 0 { self.grid.cellsize } else { self.grid.cellsize * SQRT2 };
-            let elevation_effect = if let Some(dtm) = dtm_layer_opt {
+            // Calculate step_cost consistently with the actual movement cost in the step function
+            let mut step_cost = delta_d; // Base cost is distance
+            if let Some(dtm) = dtm_layer_opt {
                 let next_elevation = dtm.get(ny_usize)
                                         .and_then(|row| row.get(nx_usize))
                                         .copied()
-                                        .unwrap_or(current_elevation);
+                                        .unwrap_or(current_elevation); // Use current if next is missing
                 let delta_z = next_elevation - current_elevation;
-                -(delta_z.max(0.0) * UPHILL_INCENTIVE_FACTOR)
-            } else {
-                0.0
-            };
-            let step_cost = delta_d + elevation_effect;
-            let heuristic_cost = goal_distance_field[ny_usize][nx_usize].unwrap_or(f64::MAX / 2.0);
 
+                // Apply uphill penalty *consistently* with the main step loop's calculation
+                if delta_z > 0.0 {
+                    // Note: UPHILL_SPEED_PENALTY_FACTOR (0.5) is defined in the step function scope.
+                    // We replicate the logic here. Ideally, this factor would be a shared constant.
+                    let uphill_penalty = delta_z * 0.5; // Using 0.5 directly for now
+                    step_cost += uphill_penalty;
+                }
+                // Optional: Add downhill benefit?
+                // else if delta_z < 0.0 { step_cost *= 0.9; }
+            }
+            // step_cost now reflects physical distance + consistent uphill penalty
+            let current_heuristic_cost = goal_distance_field[agent.y as usize][agent.x as usize].unwrap_or(f64::MAX / 2.0);
+            let next_heuristic_cost = goal_distance_field[ny_usize][nx_usize].unwrap_or(f64::MAX / 2.0);
+            // Calculate the change in heuristic cost. Negative means moving closer to the goal.
+            let heuristic_delta = next_heuristic_cost - current_heuristic_cost;
             let is_target_goal_cell = if is_on_road {
                  matches!(terrain_next, Terrain::Shelter(_))
             } else {
                  *terrain_next == Terrain::Road
             };
-            let total_estimated_cost = if is_target_goal_cell { step_cost } else { step_cost + heuristic_cost };
+            // New cost: physical step cost + weighted change in heuristic distance.
+            // Prioritize moves that decrease the distance to the goal (negative delta).
+            // The weight increases the influence of the heuristic compared to the step cost.
+            // If the next cell *is* the goal, the cost is just the step cost.
+            let total_estimated_cost = if is_target_goal_cell { step_cost } else { step_cost + heuristic_delta * HEURISTIC_WEIGHT };
 
-             if heuristic_cost < (f64::MAX / 3.0) {
+             // Only consider moves where the next cell is reachable according to the distance field
+             // (i.e., not effectively infinite distance).
+             if next_heuristic_cost < (f64::MAX / 3.0) {
                  let valid_terrain_type = if is_on_road {
                      *terrain_next == Terrain::Road || matches!(terrain_next, Terrain::Shelter(_))
                  } else {
+                     // Allow moving onto Land or Road when not currently on a road
                      *terrain_next == Terrain::Land || *terrain_next == Terrain::Road
                  };
                  if valid_terrain_type {
@@ -386,11 +450,29 @@ impl Model {
 
         if !potential_moves.is_empty() {
             potential_moves.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let (_best_cost, best_nx, best_ny) = potential_moves[0];
-            let best_heuristic = goal_distance_field[best_ny as usize][best_nx as usize].unwrap_or(f64::MAX);
-            if best_heuristic < (f64::MAX / 3.0) {
-                return Some((best_nx, best_ny, false));
+
+            // --- Exploration Logic ---
+            let mut chosen_move_index = 0; // Default to the best move
+            if potential_moves.len() > 1 && rng.gen_bool(EXPLORATION_PROBABILITY) {
+                // Choose a random *other* move from the potential list
+                chosen_move_index = rng.gen_range(1..potential_moves.len());
+                // println!("Agent {} exploring (chose move {} out of {})", agent.id, chosen_move_index + 1, potential_moves.len()); // Debug
             }
+            // --- End Exploration Logic ---
+
+            let (_chosen_cost, chosen_nx, chosen_ny) = potential_moves[chosen_move_index];
+
+            // Check if the chosen move (best or explored) leads towards a reachable goal
+            let chosen_next_heuristic = goal_distance_field[chosen_ny as usize][chosen_nx as usize].unwrap_or(f64::MAX);
+            if chosen_next_heuristic < (f64::MAX / 3.0) {
+                 // Ensure the chosen cell isn't reserved by another agent this sub-step
+                 if !reserved.contains(&(chosen_nx, chosen_ny)) {
+                    return Some((chosen_nx, chosen_ny, false)); // Return the chosen move
+                 }
+                 // If the chosen cell *is* reserved, fall through to fallback logic
+            }
+            // If the chosen move's heuristic is effectively infinite, or the cell was reserved,
+            // it means no good path was found via heuristic/exploration. Fallback logic will handle this.
         }
 
         let mut valid_neighbors = Vec::new();

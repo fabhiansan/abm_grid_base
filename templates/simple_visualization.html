@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Tsunami Simulation Grid</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+        }
+        .controls {
+            margin: 20px 0;
+            text-align: center;
+        }
+        button {
+            padding: 8px 16px;
+            margin: 0 5px;
+            cursor: pointer;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+        }
+        .grid-table {
+            margin: 20px auto;
+            border-collapse: collapse;
+        }
+        .grid-table td {
+            width: 30px;
+            height: 30px;
+            text-align: center;
+            border: 1px solid #dee2e6;
+        }
+        /* Cell colors */
+        .cell-0 { background-color: #f8f9fa; }
+        .cell-1 { background-color: #adb5bd; }
+        .cell-3 { background-color: #0d6efd; color: white; }
+        .cell-4 { background-color: #0dcaf0; color: white; }
+        .cell-5 { background-color: #ffc107; }
+        .cell-6 { background-color: #dc3545; color: white; }
+        .cell-201, .cell-202 { background-color: #198754; color: white; }
+        
+        .log {
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            margin-top: 20px;
+            background-color: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <h1>Simple Tsunami Simulation Grid</h1>
+    
+    <div class="controls">
+        <button id="init-btn">Initialize Simulation</button>
+        <button id="step-forward-btn" disabled>Step Forward</button>
+        <button id="step-backward-btn" disabled>Step Backward</button>
+        <button id="reset-btn">Reset Simulation</button>
+    </div>
+    
+    <div class="status" id="status-container">
+        Status: Not initialized
+    </div>
+    
+    <table class="grid-table" id="grid-table"></table>
+    
+    <div class="log" id="log-container"></div>
+    
+    <script>
+        // Global variables
+        let gridData = null;
+        let simulationInitialized = false;
+        let currentStep = 0;
+        
+        // DOM elements
+        const initBtn = document.getElementById('init-btn');
+        const stepForwardBtn = document.getElementById('step-forward-btn');
+        const stepBackwardBtn = document.getElementById('step-backward-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const statusContainer = document.getElementById('status-container');
+        const gridTable = document.getElementById('grid-table');
+        const logContainer = document.getElementById('log-container');
+        
+        // Event listeners
+        initBtn.addEventListener('click', initializeSimulation);
+        stepForwardBtn.addEventListener('click', stepForward);
+        stepBackwardBtn.addEventListener('click', stepBackward);
+        resetBtn.addEventListener('click', resetSimulation);
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadGridData();
+            updateStatus();
+            setInterval(updateStatus, 2000);
+            
+            logMessage('Page loaded. Click "Initialize Simulation" to begin.', 'info');
+        });
+        
+        // Function to load grid data
+        async function loadGridData() {
+            try {
+                logMessage('Loading grid data...', 'info');
+                
+                const response = await fetch('/api/grid');
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to load grid data: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                gridData = data;
+                
+                // Display the grid
+                displayGrid(data.grid);
+                
+                // Enable step forward button as soon as grid is loaded
+                stepForwardBtn.disabled = false;
+                
+                logMessage('Grid data loaded successfully.', 'success');
+            } catch (error) {
+                logMessage(`Error loading grid data: ${error.message}`, 'error');
+                console.error('Error loading grid:', error);
+            }
+        }
+        
+        // Function to display the grid as a table
+        function displayGrid(grid) {
+            // Clear existing table
+            gridTable.innerHTML = '';
+            
+            // Create table rows and cells
+            for (let row = 0; row < grid.length; row++) {
+                const tr = document.createElement('tr');
+                
+                for (let col = 0; col < grid[row].length; col++) {
+                    const td = document.createElement('td');
+                    const cellValue = grid[row][col];
+                    
+                    // Set cell content and class for styling
+                    td.textContent = cellValue;
+                    td.className = `cell-${cellValue}`;
+                    
+                    tr.appendChild(td);
+                }
+                
+                gridTable.appendChild(tr);
+            }
+        }
+        
+        // Function to initialize the simulation
+        async function initializeSimulation() {
+            try {
+                setButtonStates(true, true, true, true);
+                
+                const response = await fetch('/api/init', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to initialize simulation: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    simulationInitialized = true;
+                    currentStep = 0;
+                    
+                    updateStatus();
+                    setButtonStates(false, false, true, false);
+                    
+                    logMessage(`Simulation initialized with ${data.total_agents} agents.`, 'success');
+                } else {
+                    throw new Error(data.message || 'Unknown error initializing simulation');
+                }
+            } catch (error) {
+                logMessage(`Error: ${error.message}`, 'error');
+                setButtonStates(false, true, true, false);
+            }
+        }
+        
+        // Function to step forward
+        async function stepForward() {
+            try {
+                setButtonStates(true, true, true, true);
+                
+                const response = await fetch('/api/step/forward', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to step simulation: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.current_state) {
+                    currentStep = data.current_state.state.current_step;
+                    
+                    // Reload grid data to see changes
+                    await loadGridData();
+                    updateStatus();
+                    
+                    setButtonStates(false, false, false, false);
+                    
+                    logMessage(`Advanced to step ${currentStep}.`, 'success');
+                } else {
+                    throw new Error('Invalid response from server');
+                }
+            } catch (error) {
+                logMessage(`Error stepping forward: ${error.message}`, 'error');
+                setButtonStates(false, false, true, false);
+            }
+        }
+        
+        // Function to step backward
+        async function stepBackward() {
+            try {
+                setButtonStates(true, true, true, true);
+                
+                const response = await fetch('/api/step/backward', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to step backward: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    currentStep = data.current_step;
+                    
+                    await loadGridData();
+                    updateStatus();
+                    
+                    const disableBackward = currentStep <= 0;
+                    setButtonStates(false, false, disableBackward, false);
+                    
+                    logMessage(`Went back to step ${currentStep}.`, 'info');
+                } else {
+                    throw new Error(data.message || 'Failed to step backward');
+                }
+            } catch (error) {
+                logMessage(`Error stepping backward: ${error.message}`, 'error');
+                setButtonStates(false, false, true, false);
+            }
+        }
+        
+        // Function to reset the simulation
+        async function resetSimulation() {
+            try {
+                setButtonStates(true, true, true, true);
+                
+                const response = await fetch('/api/reset', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to reset simulation: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    simulationInitialized = false;
+                    currentStep = 0;
+                    
+                    await loadGridData();
+                    updateStatus();
+                    
+                    setButtonStates(false, true, true, false);
+                    
+                    logMessage('Simulation reset successfully.', 'warning');
+                } else {
+                    throw new Error(data.message || 'Failed to reset simulation');
+                }
+            } catch (error) {
+                logMessage(`Error resetting simulation: ${error.message}`, 'error');
+                setButtonStates(false, true, true, false);
+            }
+        }
+        
+        // Function to update status
+        async function updateStatus() {
+            try {
+                const response = await fetch('/api/status');
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to get status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Update status display
+                statusContainer.innerHTML = `
+                    <strong>Current Step:</strong> ${data.state.current_step} |
+                    <strong>Total Agents:</strong> ${data.total_agents} |
+                    <strong>Agents in Shelters:</strong> ${data.agents_in_shelters} |
+                    <strong>Dead Agents:</strong> ${data.state.dead_agents} |
+                    <strong>Tsunami:</strong> ${data.state.is_tsunami ? 'Yes' : 'No'}
+                `;
+                
+                // Update button states based on simulation status
+                if (data.state.is_running) {
+                    simulationInitialized = true;
+                    currentStep = data.state.current_step;
+                    const disableBackward = currentStep <= 0;
+                    setButtonStates(false, false, disableBackward, false);
+                } else {
+                    simulationInitialized = false;
+                    setButtonStates(false, true, true, false);
+                }
+            } catch (error) {
+                console.error('Error updating status:', error);
+                setButtonStates(false, true, true, false);
+            }
+        }
+        
+        // Helper function to set button states
+        function setButtonStates(initDisabled, stepForwardDisabled, stepBackwardDisabled, resetDisabled) {
+            initBtn.disabled = initDisabled;
+            stepForwardBtn.disabled = stepForwardDisabled;
+            stepBackwardBtn.disabled = stepBackwardDisabled;
+            resetBtn.disabled = resetDisabled;
+        }
+        
+        // Helper function to log messages
+        function logMessage(message, level = 'info') {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString();
+            
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-${level}`;
+            logEntry.innerHTML = `<span>[${timeString}]</span> ${message}`;
+            
+            // Add to top of log
+            logContainer.insertBefore(logEntry, logContainer.firstChild);
+        }
+    </script>
+</body>
+</html>
