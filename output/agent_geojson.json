@@ -1,0 +1,17 @@
+{
+  "crs": {
+    "properties": {
+      "name": "EPSG:32749"
+    },
+    "type": "name"
+  },
+  "features": [],
+  "metadata": {
+    "grid_cellsize": 10.0,
+    "grid_height": 20,
+    "grid_width": 20,
+    "location": "pacitan",
+    "simulation_step": 340
+  },
+  "type": "FeatureCollection"
+}

@@ -1,0 +1,9 @@
+{
+  "total_agents": 10930,
+  "agent_types": {
+    "Elder": 2203,
+    "Adult": 6521,
+    "Child": 698,
+    "Teen": 1508
+  }
+}

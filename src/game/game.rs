@@ -5,6 +5,7 @@ use super::grid::{Grid, Terrain};
 use rand::prelude::*; // Import Rng trait for gen_bool, etc.
 use rand::thread_rng; // Import thread_rng function
 use rand::seq::SliceRandom;
+use rayon::prelude::*; // Import Rayon prelude
 // Removed: use serde_json::json;
 use std::collections::{HashSet}; // Removed HashMap
 // Removed: use std::fs::File;
@@ -57,72 +58,58 @@ impl Model {
                 if total_positive_heights > 0 {
                     // Find and print first 5 positions with positive tsunami heights
                     let mut found_positions = 0;
-                    // Prefix y with _ as it's not used directly in the loop body
                     for (_y, row) in self.grid.tsunami_data[tsunami_data_index].iter().enumerate() {
-                        // Prefix x with _ as it's not used directly in the loop body
                         for (_x, &height) in row.iter().enumerate() {
                             if height > 0 {
-                                // println!("Tsunami at position ({}, {}): height {}", _x, _y, height); // Example if needed
                                 found_positions += 1;
-                                if found_positions >= 5 {
-                                    break;
-                                }
+                                if found_positions >= 5 { break; }
                             }
                         }
-                        if found_positions >= 5 {
-                            break;
-                        }
+                        if found_positions >= 5 { break; }
                     }
                 } else {
                     println!("WARNING: No positive tsunami heights in this timestep!");
                 }
 
-                // Process agents in reverse order to safely remove them
-                for i in (0..self.agents.len()).rev() {
-                     // Ensure agent index is still valid after potential removals
-                     if i >= self.agents.len() { continue; }
+                // Parallel identification of agents killed by tsunami
+                let newly_dead_agent_data: Vec<(usize, u32, u32, AgentType)> = self.agents
+                    .par_iter_mut() // Iterate mutably to mark is_alive
+                    .filter(|agent| agent.is_alive)
+                    .filter_map(|agent| {
+                        let tsunami_height = self.grid.get_tsunami_height(tsunami_data_index, agent.x, agent.y);
+                        if tsunami_height > 0 {
+                            agent.is_alive = false; // Mark as dead
+                            // println!( // This println in parallel can be messy, consider removing or conditionalizing
+                            //     "Agent {} marked dead due to tsunami at ({}, {}) with height {}",
+                            //     agent.id, agent.x, agent.y, tsunami_height
+                            // );
+                            Some((agent.id, agent.x, agent.y, agent.agent_type))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
-                    let agent = &self.agents[i];
-
-                     // Agent must be alive to be affected by tsunami
-                     if !agent.is_alive { continue; }
-
-                    // Get tsunami height at agent position using the correct index
-                    let tsunami_height =
-                        self.grid
-                            .get_tsunami_height(tsunami_data_index, agent.x, agent.y);
-
-                    // If tsunami height > 0, agent dies
-                    if tsunami_height > 0 {
-                        dead_agents_this_step += 1;
-                        self.grid.remove_agent(agent.x, agent.y, agent.id); // Use agent.id
-                        println!(
-                            "Agent {} died due to tsunami at ({}, {}) with height {}",
-                            agent.id, agent.x, agent.y, tsunami_height
-                        );
-
-                        self.dead_agent_types.push(agent.agent_type);
-                        // Mark agent as dead instead of removing immediately to avoid index issues
-                        self.agents[i].is_alive = false;
-                    }
+                // Sequentially update grid and dead agent counts
+                for (id, x, y, agent_type) in newly_dead_agent_data {
+                    dead_agents_this_step += 1;
+                    self.grid.remove_agent(x, y, id);
+                    self.dead_agent_types.push(agent_type);
                 }
-
-                println!("Agents killed by tsunami this step: {}", dead_agents_this_step);
+                if dead_agents_this_step > 0 {
+                    println!("Agents killed by tsunami this step: {}", dead_agents_this_step);
+                }
             }
-            // No need for the 'else' here as the outer condition already checks index bounds
         } else if is_tsunami_active {
              println!("Warning: Tsunami is active but tsunami data index {} is out of bounds (max {}). No tsunami deaths applied.", tsunami_data_index, self.grid.tsunami_data.len());
         }
-        // If !is_tsunami_active, no tsunami deaths occur.
-
-        self.dead_agents += dead_agents_this_step; // Update total dead count
-
-        let mut rng = thread_rng(); // Keep using imported thread_rng as it's common practice
+        self.dead_agents += dead_agents_this_step;
 
         // --- Trigger, Milling, and Decision Logic (agent_reaction_delay removed) ---
-        // Agents can now trigger/mill/decide from step 0 onwards.
-        for agent in &mut self.agents {
-             if !agent.is_alive { continue; } // Skip dead agents
+        // Parallelize agent decision-making
+        self.agents.par_iter_mut().for_each(|agent| { // Changed to for_each, closure takes |agent|
+            let mut rng = thread_rng(); // RNG initialized per thread/task
+            if !agent.is_alive { return; } // Skip dead agents (Rayon's for_each uses return like continue)
 
             // Trigger: Mark when agent *could* start reacting (if not already triggered)
             // This now happens potentially from step 0 (Reverted to original behavior)
@@ -172,7 +159,7 @@ impl Model {
             // Only continue milling if not overridden by siren
             if !agent.moved_by_siren && agent.milling_steps_remaining > 0 {
                 agent.milling_steps_remaining -= 1;
-                continue; // Skip decision and movement for this agent this step
+                return; // Corrected from continue
             }
 
             // Decision: Decide once, only after milling time is over and if not already decided by siren
@@ -191,9 +178,10 @@ impl Model {
                     // println!("Agent {} decided NOT to evacuate initially (Prob: {:.2})", agent.id, evacuation_probability); // Debug
                 }
             }
-        }
+        });
         // --- End Trigger, Milling, and Decision Logic ---
 
+        let mut rng = thread_rng(); // Add RNG for the sequential movement loop
 
         let mut agent_order: Vec<usize> = (0..self.agents.len()).collect();
 

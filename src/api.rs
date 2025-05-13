@@ -26,13 +26,14 @@ use std::sync::{Arc, Mutex};
 // Configuration for simulation
 #[derive(Serialize, Deserialize, Clone, Debug)] // Added Debug derive
 pub struct SimulationConfig {
-    pub location: String,
-    pub grid_path: String,
-    pub population_path: String,
-    pub tsunami_data_path: String,
+    pub location: String, // Used for default paths if specific paths are not provided
+    pub grid_file_path: Option<String>, // Direct path to grid file
+    pub agent_file_path: Option<String>, // Direct path to agent/population file
+    pub tsunami_data_path: Option<String>, // Direct path to tsunami data directory
     pub output_path: String,
     pub max_steps: Option<u32>,
-    pub dtm_path: Option<String>, // Optional path for DTM data
+    pub dtm_file_path: Option<String>, // Direct path for DTM data (renamed from dtm_path)
+    pub siren_config_path: Option<String>, // Direct path to siren configuration JSON
     pub use_dtm_for_cost: bool, // Flag to enable/disable DTM in cost calculation
     pub tsunami_delay: u32, // Delay before tsunami becomes active
     // Removed: pub agent_reaction_delay: u32,
@@ -49,18 +50,20 @@ pub struct SimulationConfig {
 
 impl Default for SimulationConfig {
     fn default() -> Self {
+        // Defaulting to Pacitan configuration via location field
         SimulationConfig {
-            location: "sample".to_string(),
-            grid_path: "./data_sample/sample_grid.asc".to_string(),
-            population_path: "./data_sample/sample_agents.asc".to_string(),
-            tsunami_data_path: "./data_sample/tsunami_ascii_sample".to_string(),
-            output_path: "./output".to_string(),
-            max_steps: Some(5000), // Default max steps
-            dtm_path: Some("./data_sample/sample_dtm.asc".to_string()),
-            use_dtm_for_cost: true, // Default to using DTM if available
-            tsunami_delay: 100, // Default tsunami delay (steps)
+            location: "pacitan".to_string(),
+            grid_file_path: None,
+            agent_file_path: None,
+            tsunami_data_path: None,
+            output_path: "./output".to_string(), 
+            max_steps: Some(5000), 
+            dtm_file_path: None, 
+            siren_config_path: None,
+            use_dtm_for_cost: false, 
+            tsunami_delay: 1800, 
             // Removed: agent_reaction_delay: 50,
-            tsunami_speed_time: 60, // Default speed time
+            tsunami_speed_time: 30, // Default speed time
             data_collection_interval: 30, // Default collection interval
             milling_time_min: 5, // Default min milling steps
             milling_time_max: 20, // Default max milling steps
@@ -78,9 +81,10 @@ impl SimulationConfig {
     pub fn get_location_paths(&self) -> (String, String, String) {
         match self.location.as_str() {
             "pacitan" => (
-                format!("./data_pacitan/jalantes_pacitan.asc"),
-                format!("./data_pacitan/agent_pacitan.asc"),
-                format!("./data_pacitan/tsunami_ascii_pacitan")
+                // Corrected paths for Pacitan based on file structure
+                format!("./data_pacitan/jalantes.asc"),
+                format!("./data_pacitan/agent2mboundariesjalan_reprojected.asc"),
+                format!("./data_pacitan/tsunami_pacitan/asc") // Directory for tsunami files
             ),
             "sample" => (
                 format!("./data_sample/sample_grid.asc"),
@@ -177,43 +181,61 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
 
     // Use the currently set config in AppState
     let config = app_state.config.clone(); // Clone the config *currently* in the state
-    let (grid_path, population_path, tsunami_data_path) = config.get_location_paths();
     drop(app_state); // Release lock before potentially long I/O
 
-    println!("Initializing simulation using current config: {:?}", config); // Log the config being used
-    println!("Initializing simulation for location: {}", config.location);
-    println!("Using grid path: {}", grid_path);
-    println!("Using population path: {}", population_path);
-    println!("Using tsunami data path: {}", tsunami_data_path);
-    println!("Tsunami Delay: {}", config.tsunami_delay); // Removed Agent Reaction Delay log
+    println!("Initializing simulation with received config: {:?}", config);
+
+    // Resolve paths: prioritize direct paths from config, then fall back to location-based paths
+    let (loc_grid_path, loc_agent_path, loc_tsunami_path) = config.get_location_paths();
+
+    let grid_path_to_use = config.grid_file_path.as_deref()
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| loc_grid_path.clone());
+
+    let agent_path_to_use = config.agent_file_path.as_deref()
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| loc_agent_path.clone());
+
+    let tsunami_path_to_use = config.tsunami_data_path.as_deref()
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| loc_tsunami_path.clone());
+
+    println!("Effective paths for initialization:");
+    println!("  Grid Path: {}", grid_path_to_use);
+    println!("  Agent Path: {}", agent_path_to_use);
+    println!("  Tsunami Data Path: {}", tsunami_path_to_use);
+    if let Some(p) = &config.dtm_file_path { println!("  DTM File Path: {}", p); }
+    if let Some(p) = &config.siren_config_path { println!("  Siren Config Path: {}", p); }
+    println!("Tsunami Delay: {}", config.tsunami_delay);
 
 
     // Load base grid (terrain, shelters)
-    let (mut grid, mut agents) = match load_grid_from_ascii(&grid_path) {
+    let (mut grid, mut agents) = match load_grid_from_ascii(&grid_path_to_use) {
          Ok(data) => data,
          Err(e) => {
-            eprintln!("Failed to load grid from '{}': {}", grid_path, e);
-            return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to load grid file '{}': {}", grid_path, e)}));
+            eprintln!("Failed to load grid from '{}': {}", grid_path_to_use, e);
+            return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to load grid file '{}': {}", grid_path_to_use, e)}));
          }
     };
 
     // Load population agents
     let mut next_agent_id = agents.len();
-    // Pass the config reference when calling
-    if let Err(e) = load_population_and_create_agents(&population_path, grid.width, grid.height, &mut grid, &mut agents, &mut next_agent_id, &config) {
-        eprintln!("Failed to load population from '{}': {}", population_path, e);
-        return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to load or process population file '{}': {}", population_path, e)}));
+    if let Err(e) = load_population_and_create_agents(&agent_path_to_use, grid.width, grid.height, &mut grid, &mut agents, &mut next_agent_id, &config) {
+        eprintln!("Failed to load population from '{}': {}", agent_path_to_use, e);
+        return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to load or process population file '{}': {}", agent_path_to_use, e)}));
     }
     println!("Loaded {} agents from population file.", agents.len());
 
 
     // Load tsunami data
-     let tsunami_data = match read_tsunami_data(&tsunami_data_path, grid.ncol, grid.nrow) {
+     let tsunami_data = match read_tsunami_data(&tsunami_path_to_use, grid.ncol, grid.nrow) {
         Ok(data) => data,
         Err(e) => {
-            eprintln!("Failed to read tsunami data from '{}': {}", tsunami_data_path, e);
-            // Consider if this should be a fatal error or just a warning allowing simulation without tsunami
-            return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to read tsunami data from directory '{}': {}", tsunami_data_path, e)}));
+            eprintln!("Failed to read tsunami data from '{}': {}", tsunami_path_to_use, e);
+            return HttpResponse::InternalServerError().json(json!({"status": "error", "message": format!("Failed to read tsunami data from directory '{}': {}", tsunami_path_to_use, e)}));
         }
     };
     let tsunami_len = tsunami_data.len();
@@ -221,12 +243,11 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
     grid.tsunami_data = tsunami_data;
 
     // Load Optional DTM Layer
-    // Use get_dtm_path helper method if available, otherwise access directly
-    let dtm_path_opt = config.dtm_path.clone(); // Clone to avoid borrowing issues
-    if let Some(dtm_path) = dtm_path_opt {
-        if !dtm_path.is_empty() {
-            println!("Loading DTM data from: {}", dtm_path);
-            match crate::game::grid::load_float_asc_layer(&dtm_path) {
+    let dtm_file_path_opt = config.dtm_file_path.clone(); // Use renamed field
+    if let Some(dtm_path_str) = dtm_file_path_opt {
+        if !dtm_path_str.is_empty() {
+            println!("Loading DTM data from: {}", dtm_path_str);
+            match crate::game::grid::load_float_asc_layer(&dtm_path_str) {
                 Ok((dtm_data, dtm_ncols, dtm_nrows, _, _, _)) => {
                     if dtm_ncols == grid.width && dtm_nrows == grid.height {
                         grid.environment_layers.insert("dtm".to_string(), dtm_data);
@@ -235,41 +256,49 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
                         eprintln!("Error: DTM dimensions ({}x{}) do not match grid dimensions ({}x{}). DTM not loaded.", dtm_ncols, dtm_nrows, grid.width, grid.height);
                     }
                 }
-                Err(e) => { eprintln!("Error loading DTM data from '{}': {}. Proceeding without DTM.", dtm_path, e); }
+                Err(e) => { eprintln!("Error loading DTM data from '{}': {}. Proceeding without DTM.", dtm_path_str, e); }
             }
         } else {
-             println!("DTM path in config is empty. Skipping DTM loading.");
+             println!("DTM file path in config is empty. Skipping DTM loading.");
         }
     } else {
-        println!("No DTM path provided in config. Skipping DTM loading.");
+        println!("No DTM file path provided in config. Skipping DTM loading.");
     }
 
     // --- Load Siren Config (during init) ---
-    let (_grid_path, _population_path, tsunami_data_path_for_siren) = config.get_location_paths();
-    let siren_config_path = Path::new(&tsunami_data_path_for_siren)
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("siren_config.json"); // Look for JSON file
-
-    let loaded_siren_config: Option<SirenConfig> = match File::open(&siren_config_path) {
+    // Prioritize direct path from config, then fall back to deriving from resolved tsunami_path_to_use
+    let siren_path_to_load = config.siren_config_path.as_deref()
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            Path::new(&tsunami_path_to_use) // Use the resolved tsunami_path_to_use
+                .parent()
+                .unwrap_or_else(|| Path::new(".")) // Handle cases where tsunami_path_to_use might not have a parent
+                .join("siren_config.json")
+                .to_string_lossy()
+                .into_owned()
+        });
+    
+    println!("Attempting to load siren config from: {}", siren_path_to_load);
+    let loaded_siren_config: Option<SirenConfig> = match File::open(&siren_path_to_load) {
         Ok(file) => {
             let reader = BufReader::new(file);
             match serde_json::from_reader(reader) {
-                Ok(config) => {
-                    println!("Siren config loaded during init: {:?}", config);
-                    Some(config)
+                Ok(s_config) => {
+                    println!("Siren config loaded: {:?}", s_config);
+                    Some(s_config)
                 }
                 Err(e) => {
-                    eprintln!("Error parsing siren config file {:?}: {}. Siren disabled.", siren_config_path, e);
+                    eprintln!("Error parsing siren config file {}: {}. Siren disabled.", siren_path_to_load, e);
                     None
                 }
             }
         }
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                println!("Siren config file {:?} not found. Siren disabled.", siren_config_path);
+                println!("Siren config file {} not found. Siren disabled.", siren_path_to_load);
             } else {
-                eprintln!("Error opening siren config file {:?}: {}. Siren disabled.", siren_config_path, e);
+                eprintln!("Error opening siren config file {}: {}. Siren disabled.", siren_path_to_load, e);
             }
             None
         }

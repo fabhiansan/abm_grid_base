@@ -13,6 +13,8 @@ import json
 import os
 from itertools import product
 import argparse
+import subprocess
+import sys
 
 # Try to import visualization libraries, with helpful error messages if missing
 try:
@@ -72,13 +74,25 @@ def get_default_config():
         print(f"Failed to get default config. Status code: {response.status_code}")
         return None
 
+def flatten_dict(d, parent_key='', sep='.'):
+    """Recursively flatten nested dictionaries."""
+    items = {}
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.update(flatten_dict(v, new_key, sep=sep))
+        else:
+            items[new_key] = v
+    return items
+
 def run_simulation(config, run_id, base_config):
     """Run a single simulation with the given configuration"""
     try:
         # Convert parameter format if needed (handle nested parameters)
         processed_config = base_config.copy()
         
-        # Process flat parameters with dot notation for nested structure
+        # Update processed_config with current run's parameters from 'config'
+        # This loop handles both flat and nested parameters defined in param_ranges
         for key, value in config.items():
             if '.' in key:
                 # Handle nested parameters with dot notation (e.g., "knowledge_level_distribution.high")
@@ -94,7 +108,27 @@ def run_simulation(config, run_id, base_config):
             else:
                 # Handle regular parameters
                 processed_config[key] = value
+
+        # Handle "level" parameters by setting corresponding min and max for the API
+        # The original "level" parameter (e.g., "milling_time_value") remains in the 'config'
+        # dictionary that is saved with the results, which is good for plotting.
+        # These 'level' parameters are expected to be in 'processed_config' at this point
+        # if they were part of the 'config' (params) for the current run.
+        if "milling_time_value" in processed_config:
+            level = processed_config.pop("milling_time_value") 
+            processed_config["milling_time_min"] = level
+            processed_config["milling_time_max"] = level
         
+        if "knowledge_level_value" in processed_config:
+            level = processed_config.pop("knowledge_level_value")
+            processed_config["knowledge_level_min"] = level
+            processed_config["knowledge_level_max"] = level
+
+        if "household_size_value" in processed_config:
+            level = processed_config.pop("household_size_value")
+            processed_config["household_size_min"] = level
+            processed_config["household_size_max"] = level
+            
         # Reset the simulation
         reset_response = requests.post(f"{RUST_API_BASE_URL}/api/reset", timeout=10)
         if reset_response.status_code != 200:
@@ -108,13 +142,15 @@ def run_simulation(config, run_id, base_config):
             return None
         
         # Initialize the simulation
-        init_response = requests.post(f"{RUST_API_BASE_URL}/api/init", timeout=30)
+        init_response = requests.post(f"{RUST_API_BASE_URL}/api/init", timeout=10000)
         if init_response.status_code != 200:
             print(f"Failed to initialize simulation. Status code: {init_response.status_code}")
             return None
         
         # Run the simulation for the specified number of steps
-        run_response = requests.post(f"{RUST_API_BASE_URL}/api/run/{processed_config.get('max_steps', 100)}", timeout=120)
+        current_max_steps = processed_config.get('max_steps', 100)
+        print(f"DEBUG: Starting simulation run {run_id} for {current_max_steps} steps...")
+        run_response = requests.post(f"{RUST_API_BASE_URL}/api/run/{current_max_steps}", timeout=10000) # Increased timeout to 5 minutes
         if run_response.status_code != 200:
             print(f"Failed to run simulation. Status code: {run_response.status_code}")
             return None
@@ -129,28 +165,76 @@ def run_simulation(config, run_id, base_config):
         return None
     
     # Export agent outcomes
-    outcomes_response = requests.get(f"{RUST_API_BASE_URL}/api/export/agent_outcomes", timeout=30)
-    geojson_response = requests.get(f"{RUST_API_BASE_URL}/api/export/geojson", timeout=30)
+    print(f"DEBUG: Exporting data for run {run_id}...")
+    outcomes_response = requests.get(f"{RUST_API_BASE_URL}/api/export/agent_outcomes", timeout=10000) # Increased timeout
+    geojson_response = requests.get(f"{RUST_API_BASE_URL}/api/export/geojson", timeout=10000) # Increased timeout
     
     if outcomes_response.status_code == 200 and geojson_response.status_code == 200:
         # Save outcomes to file with run_id in the name
-        outcomes_data = outcomes_response.json()
-        geojson_data = geojson_response.json()
+        outcomes_api_response = outcomes_response.json()
+        geojson_api_response = geojson_response.json()
         
         run_dir = os.path.join(OUTPUT_DIR, f"run_{run_id}")
         if not os.path.exists(run_dir):
             os.makedirs(run_dir)
-        
-        with open(os.path.join(run_dir, "agent_outcomes.json"), "w", encoding="utf-8") as f:
-            json.dump(outcomes_data, f, indent=2)
-        
-        with open(os.path.join(run_dir, "agent_geojson.json"), "w", encoding="utf-8") as f:
-            json.dump(geojson_data, f, indent=2)
+
+        # Process Agent Outcomes
+        actual_outcomes_content = outcomes_api_response # Default to API response
+        outcomes_file_path_from_api = outcomes_api_response.get("file_path")
+        if outcomes_file_path_from_api and outcomes_api_response.get("status") == "ok":
+            try:
+                # Ensure the path from API is treated as relative to the script's CWD or an absolute path
+                resolved_actual_outcomes_path = os.path.abspath(outcomes_file_path_from_api)
+                if os.path.exists(resolved_actual_outcomes_path):
+                    with open(resolved_actual_outcomes_path, "r", encoding="utf-8") as src_f:
+                        loaded_content = json.load(src_f)
+                    with open(os.path.join(run_dir, "agent_outcomes.json"), "w", encoding="utf-8") as dest_f:
+                        json.dump(loaded_content, dest_f, indent=2)
+                    actual_outcomes_content = loaded_content # Use actual content
+                    print(f"Successfully saved actual outcomes from {resolved_actual_outcomes_path} to {os.path.join(run_dir, 'agent_outcomes.json')} for run {run_id}")
+                else:
+                    print(f"Error: Actual outcomes file not found at {resolved_actual_outcomes_path} for run {run_id}. API response: {outcomes_api_response}. Saving API response instead.")
+                    with open(os.path.join(run_dir, "agent_outcomes.json"), "w", encoding="utf-8") as f:
+                        json.dump(outcomes_api_response, f, indent=2)
+            except Exception as e:
+                print(f"Error reading/writing actual outcomes data for run {run_id} from {outcomes_file_path_from_api}: {e}. API response: {outcomes_api_response}. Saving API response instead.")
+                with open(os.path.join(run_dir, "agent_outcomes.json"), "w", encoding="utf-8") as f:
+                    json.dump(outcomes_api_response, f, indent=2)
+        else:
+            print(f"Warning: 'file_path' not found or status not 'ok' in outcomes_response for run {run_id}. Saving API response. Response: {outcomes_api_response}")
+            with open(os.path.join(run_dir, "agent_outcomes.json"), "w", encoding="utf-8") as f:
+                json.dump(outcomes_api_response, f, indent=2)
+
+        # Process Agent GeoJSON
+        actual_geojson_content = geojson_api_response # Default to API response
+        geojson_file_path_from_api = geojson_api_response.get("file_path")
+        if geojson_file_path_from_api and geojson_api_response.get("status") == "ok":
+            try:
+                resolved_actual_geojson_path = os.path.abspath(geojson_file_path_from_api)
+                if os.path.exists(resolved_actual_geojson_path):
+                    with open(resolved_actual_geojson_path, "r", encoding="utf-8") as src_f:
+                        loaded_content = json.load(src_f)
+                    with open(os.path.join(run_dir, "agent_geojson.json"), "w", encoding="utf-8") as dest_f:
+                        json.dump(loaded_content, dest_f, indent=2)
+                    actual_geojson_content = loaded_content # Use actual content
+                    print(f"Successfully saved actual geojson from {resolved_actual_geojson_path} to {os.path.join(run_dir, 'agent_geojson.json')} for run {run_id}")
+                else:
+                    print(f"Error: Actual geojson file not found at {resolved_actual_geojson_path} for run {run_id}. API response: {geojson_api_response}. Saving API response instead.")
+                    with open(os.path.join(run_dir, "agent_geojson.json"), "w", encoding="utf-8") as f:
+                        json.dump(geojson_api_response, f, indent=2)
+            except Exception as e:
+                print(f"Error reading/writing actual geojson data for run {run_id} from {geojson_file_path_from_api}: {e}. API response: {geojson_api_response}. Saving API response instead.")
+                with open(os.path.join(run_dir, "agent_geojson.json"), "w", encoding="utf-8") as f:
+                    json.dump(geojson_api_response, f, indent=2)
+        else:
+            print(f"Warning: 'file_path' not found or status not 'ok' in geojson_response for run {run_id}. Saving API response. Response: {geojson_api_response}")
+            with open(os.path.join(run_dir, "agent_geojson.json"), "w", encoding="utf-8") as f:
+                json.dump(geojson_api_response, f, indent=2)
         
         return {
             "config": config,
-            "outcomes": outcomes_data,
-            "geojson": geojson_data,
+            "outcomes": actual_outcomes_content, 
+            "geojson": actual_geojson_content,
             "run_id": run_id
         }
     else:
@@ -166,11 +250,23 @@ def extract_outcomes_metrics(simulation_results):
             continue
             
         config = result["config"]
-        outcomes = result["outcomes"]
+        # 'outcomes' from result is now expected to be the actual list of agent outcomes,
+        # or the API response dictionary if reading the actual file failed.
+        raw_data_for_outcomes = result["outcomes"] 
         
-        # Extract agent outcomes if available
-        agent_data = outcomes.get("agent_outcomes", [])
+        agent_data = [] # Initialize as empty list
         
+        if isinstance(raw_data_for_outcomes, list):
+            # This is the expected case: raw_data_for_outcomes is the list of agent dicts
+            agent_data = raw_data_for_outcomes
+        elif isinstance(raw_data_for_outcomes, dict):
+            # This is the fallback case: raw_data_for_outcomes is the API response dict
+            if "file_path" in raw_data_for_outcomes: # Indicates it's likely the API response
+                 print(f"Run {result.get('run_id', 'N/A')}: Metrics based on API response fallback, actual agent data not processed from file.")
+            # agent_data remains [], which is consistent with .get("agent_outcomes", []) on an API response.
+        else:
+            print(f"Run {result.get('run_id', 'N/A')}: Unexpected data type for outcomes: {type(raw_data_for_outcomes)}. Agent data will be empty.")
+
         # Calculate aggregate metrics
         num_agents = len(agent_data)
         evacuated = sum(1 for agent in agent_data if agent.get("is_in_shelter", False))
@@ -196,12 +292,10 @@ def extract_outcomes_metrics(simulation_results):
             "min_evacuation_time": min(evacuation_times) if evacuation_times else 0,
         }
         
-        # Add all configuration parameters, filtering complex/nested objects
-        for key, value in config.items():
-            if isinstance(value, (int, float, bool)):
-                record[f"param_{key}"] = value
-            elif isinstance(value, str):
-                # For string values, we'll store them but they won't be used in numerical analysis
+        # Add all configuration parameters, flatten nested dicts
+        flat_config = flatten_dict(config)
+        for key, value in flat_config.items():
+            if isinstance(value, (int, float, bool)) or isinstance(value, str):
                 record[f"param_{key}"] = value
         
         metrics.append(record)
@@ -227,6 +321,14 @@ def generate_parameter_combinations(param_ranges):
 
 def plot_sensitivity_analysis(df, output_dir):
     """Create visualizations for sensitivity analysis"""
+    print("DEBUG: Entered plot_sensitivity_analysis function.")
+    if df is None or df.empty:
+        print("DEBUG: DataFrame is None or empty in plot_sensitivity_analysis. Skipping plotting.")
+        return
+
+    sns.set_style('whitegrid')
+    sns.set_context('talk', font_scale=1.1)
+    
     # Identify parameter columns (they start with 'param_')
     param_cols = [col for col in df.columns if col.startswith('param_')]
     metric_cols = ['evacuation_rate', 'avg_evacuation_time', 'max_evacuation_time']
@@ -244,12 +346,12 @@ def plot_sensitivity_analysis(df, output_dir):
     
     # Skip correlation matrix if no numeric parameters
     if len(correlation_cols) > 1:  # Need at least 2 columns for correlation
-        plt.figure(figsize=(12, 10))
+        plt.figure(figsize=(12, 10), dpi=150)
         corr_matrix = df[correlation_cols].corr()
         sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
         plt.title('Correlation Matrix: Parameters vs Metrics')
         plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'correlation_matrix.png'))
+        plt.savefig(os.path.join(plots_dir, 'correlation_matrix.png'), dpi=300)
         plt.close()
     
     # 2. Pairplots for each parameter against metrics
@@ -263,7 +365,7 @@ def plot_sensitivity_analysis(df, output_dir):
             
         for metric in metric_cols:
             plt.figure(figsize=(8, 6))
-            sns.scatterplot(data=df, x=param, y=metric)
+            sns.scatterplot(data=df, x=param, y=metric, alpha=0.6, edgecolor='w', s=50)
             
             # Add trendline
             sns.regplot(data=df, x=param, y=metric, scatter=False, color='red')
@@ -272,7 +374,8 @@ def plot_sensitivity_analysis(df, output_dir):
             plt.xlabel(param_name)
             plt.ylabel(metric)
             plt.tight_layout()
-            plt.savefig(os.path.join(plots_dir, f'{param_name}_vs_{metric}.png'))
+            param_file_name = param_name.replace('.', '_')
+            plt.savefig(os.path.join(plots_dir, f'{param_file_name}_vs_{metric}.png'), dpi=300)
             plt.close()
     
     # 3. Boxplots for categorical parameters
@@ -291,7 +394,8 @@ def plot_sensitivity_analysis(df, output_dir):
                 plt.ylabel(metric)
                 plt.xticks(rotation=45)
                 plt.tight_layout()
-                plt.savefig(os.path.join(plots_dir, f'boxplot_{param_name}_vs_{metric}.png'))
+                param_file_name = param_name.replace('.', '_')
+                plt.savefig(os.path.join(plots_dir, f'boxplot_{param_file_name}_vs_{metric}.png'), dpi=300)
                 plt.close()
     
     # 4. Summary statistics table
@@ -336,11 +440,24 @@ def run_sensitivity_analysis(param_ranges, base_config, num_runs=1):
             run_id += 1
     
     # Process and analyze results
+    print(f"DEBUG: Simulation loop finished. Number of results in all_results: {len(all_results)}")
     if all_results:
-        print("Extracting metrics from simulation results...")
+        # Let's see a snippet of what's in all_results if it's not too long
+        if len(all_results) < 5:
+            print(f"DEBUG: all_results content (first few): {all_results[:5]}")
+        else:
+            print(f"DEBUG: First result in all_results: {all_results[0] if all_results else 'None'}")
+
+        print("DEBUG: Attempting to extract metrics from simulation results...")
         metrics_df = extract_outcomes_metrics(all_results)
+        print(f"DEBUG: Metrics DataFrame info after extraction:")
+        if metrics_df is not None and not metrics_df.empty:
+            metrics_df.info()
+            print(f"DEBUG: metrics_df.head():\n{metrics_df.head()}")
+        else:
+            print("DEBUG: metrics_df is None or empty.")
         
-        print("Creating visualizations...")
+        print("DEBUG: Attempting to create visualizations...")
         plot_sensitivity_analysis(metrics_df, OUTPUT_DIR)
         
         print(f"Sensitivity analysis complete! Results saved to {OUTPUT_DIR}")
@@ -354,7 +471,41 @@ def main():
     parser = argparse.ArgumentParser(description="Run sensitivity analysis on ABM simulation")
     parser.add_argument("--runs", type=int, default=1, help="Number of runs per parameter combination")
     parser.add_argument("--simple", action="store_true", help="Run a simplified analysis with fewer parameter combinations")
+    parser.add_argument("--test", action="store_true", help="Use sample data generated by generate_sample_data.py for the simulation runs")
     args = parser.parse_args()
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if args.test:
+        print("--- Test mode enabled: Generating and using sample data ---")
+        try:
+            generate_script_path = os.path.join(script_dir, "generate_sample_data.py")
+            
+            print(f"Running {generate_script_path} to generate sample data...")
+            # Run generate_sample_data.py with default arguments
+            # Using sys.executable to ensure the correct python interpreter
+            completed_process = subprocess.run(
+                [sys.executable, generate_script_path], 
+                capture_output=True, text=True, check=True, cwd=script_dir
+            )
+            print("generate_sample_data.py output:")
+            print(completed_process.stdout)
+            if completed_process.stderr:
+                print("generate_sample_data.py errors:")
+                print(completed_process.stderr)
+            print("Sample data generated successfully in ./data_sample/ directory relative to the script.")
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error running generate_sample_data.py: {e}")
+            print(f"Stdout: {e.stdout}")
+            print(f"Stderr: {e.stderr}")
+            print("Exiting due to failure in sample data generation.")
+            return 
+        except FileNotFoundError:
+            print(f"Error: generate_sample_data.py not found at {generate_script_path}.")
+            print("Please ensure generate_sample_data.py is in the same directory as sensitivity_analysis.py.")
+            print("Exiting due to missing sample data generator.")
+            return
     
     # Check if the API is running
     if not check_api_health():
@@ -364,34 +515,44 @@ def main():
     base_config = get_default_config()
     if not base_config:
         return
+
+    if args.test:
+        if base_config: # Ensure base_config was fetched successfully
+            print("Updating base_config to use generated sample data paths...")
+            # data_sample directory is created by generate_sample_data.py in script_dir
+            sample_data_dir = os.path.join(script_dir, "data_sample")
+            
+            # These are assumed keys for the Rust API's configuration.
+            # If the actual keys are different, these need to be adjusted.
+            # Using absolute paths to be safe, assuming the Rust server might have a different CWD.
+            base_config["grid_file_path"] = os.path.join(sample_data_dir, "sample_grid.asc")
+            base_config["agent_file_path"] = os.path.join(sample_data_dir, "sample_agents.asc")
+            base_config["dtm_file_path"] = os.path.join(sample_data_dir, "sample_dtm.asc")
+            base_config["siren_config_path"] = os.path.join(sample_data_dir, "siren_config.json")
+            base_config["tsunami_data_path"] = os.path.join(sample_data_dir, "tsunami_ascii_sample") # Directory path
+            
+            print(f"Updated base_config for test mode: {json.dumps(base_config, indent=2)}")
+        else:
+            # This case should ideally be caught by the 'if not base_config: return' above,
+            # but as a safeguard if logic changes:
+            print("Cannot update base_config for test mode as it failed to load initially.")
+            return
     
-    # Define parameter ranges to test based on evacuation scenario
-    if args.simple:
-        # Simple analysis with fewer combinations
-        param_ranges = {
-            "knowledge_level_distribution.high": [0.1, 0.3, 0.5],
-            "warning_system_coverage": [0.6, 0.9],
-            "social_influence_factor": [0.3, 0.7],
-        }
-    else:
-        # More comprehensive analysis
-        param_ranges = {
-            # Knowledge level factors
-            "knowledge_level_distribution.low": [0.2, 0.4, 0.6],
-            "knowledge_level_distribution.high": [0.1, 0.3, 0.5],
-            
-            # Warning system factors
-            "warning_system_coverage": [0.5, 0.7, 0.9],
-            "warning_system_threshold": [0.05, 0.1, 0.2],
-            
-            # Social factors
-            "social_influence_factor": [0.2, 0.4, 0.6],
-            "trust_in_authorities": [0.3, 0.6, 0.9],
-            
-            # Simulation parameters
-            "max_steps": [100, 200]
-        }
+    # Define parameter ranges to test specific "levels" for min/max parameters
+    # using 2 values per parameter to reduce total runs, as requested by the user.
+    param_ranges = {
+        "milling_time_value": [0, 20],           # Low and High milling durations
+        "siren_effectiveness": [0.6, 1.0],       # Low and High siren effectiveness
+        "knowledge_level_value": [20, 80],       # Low and High knowledge levels
+        "household_size_value": [1, 5]            # Low and High household sizes
+    }
     
+    # The args.simple flag will no longer change which parameters are tested,
+    # as the user wants to focus only on the attributes specified above.
+    # If args.simple is True, the number of combinations will still be smaller
+    # if the value lists above were different for simple vs. comprehensive.
+    # Currently, they are the same, meaning args.simple has no effect on param_ranges.
+
     # Run the sensitivity analysis
     results = run_sensitivity_analysis(param_ranges, base_config, num_runs=args.runs)
     
@@ -409,6 +570,7 @@ if __name__ == "__main__":
     print("Tips:")
     print("- Use --simple flag for a quicker analysis with fewer parameters")
     print("- Use --runs N to run each parameter set N times for statistical significance")
+    print("- Use --test to run the analysis using freshly generated sample data")
     print("- Results will be saved in the 'sensitivity_analysis_results' directory\n")
     
     # Run the analysis

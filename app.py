@@ -64,7 +64,8 @@ def get_current_geojson():
 def init_simulation_proxy():
     """Proxies the POST request to the Rust API's /api/init endpoint."""
     # Frontend calls /init_simulation, Rust expects /api/init
-    return proxy_request('POST', '/api/init', timeout=20) # Target path updated
+    # Increased timeout to 300 seconds (5 minutes) for potentially long initialization
+    return proxy_request('POST', '/api/init', timeout=300) # Target path updated
 
 # --- New Proxy Endpoints ---
 

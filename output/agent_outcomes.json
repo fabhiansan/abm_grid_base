@@ -1,0 +1,97 @@
+{
+  "agent_outcomes": [
+    {
+      "agent_id": 0,
+      "agent_type": "Adult",
+      "final_status": "SafeInShelter",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    },
+    {
+      "agent_id": 1,
+      "agent_type": "Elder",
+      "final_status": "SafeInShelter",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    },
+    {
+      "agent_id": 2,
+      "agent_type": "Adult",
+      "final_status": "SafeInShelter",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    },
+    {
+      "agent_id": 3,
+      "agent_type": "Elder",
+      "final_status": "SafeInShelter",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    },
+    {
+      "agent_id": 4,
+      "agent_type": "Adult",
+      "final_status": "SafeInShelter",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    },
+    {
+      "agent_id": 5,
+      "agent_type": "Teen",
+      "final_status": "SafeInShelter",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    },
+    {
+      "agent_id": 6,
+      "agent_type": "Adult",
+      "final_status": "SafeInShelter",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    },
+    {
+      "agent_id": 7,
+      "agent_type": "Adult",
+      "final_status": "Dead",
+      "final_step": 340,
+      "initial_household_size": 5,
+      "initial_knowledge_level": 80,
+      "moved_by_siren": false
+    }
+  ],
+  "simulation_config": {
+    "agent_file_path": "/home/bs000567/kuliah/abm_grid_base/data_sample/sample_agents.asc",
+    "data_collection_interval": 30,
+    "dtm_file_path": "/home/bs000567/kuliah/abm_grid_base/data_sample/sample_dtm.asc",
+    "grid_file_path": "/home/bs000567/kuliah/abm_grid_base/data_sample/sample_grid.asc",
+    "household_size_max": 5,
+    "household_size_min": 5,
+    "knowledge_level_max": 80,
+    "knowledge_level_min": 80,
+    "location": "pacitan",
+    "max_steps": 5000,
+    "milling_time_max": 20,
+    "milling_time_min": 20,
+    "output_path": "./output",
+    "siren_config_path": "/home/bs000567/kuliah/abm_grid_base/data_sample/siren_config.json",
+    "siren_effectiveness_probability": 0.800000011920929,
+    "tsunami_data_path": "/home/bs000567/kuliah/abm_grid_base/data_sample/tsunami_ascii_sample",
+    "tsunami_delay": 100,
+    "tsunami_speed_time": 60,
+    "use_dtm_for_cost": false
+  }
+}

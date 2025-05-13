@@ -255,10 +255,10 @@ pub fn run_simulation_instance(config: &api::SimulationConfig) -> io::Result<Sim
     println!("Starting simulation instance with config: {:?}", config);
 
     let (grid_path, population_path, tsunami_data_path) = config.get_location_paths();
-    // Access dtm_path field directly, clone the Option<String>
+    // Access dtm_file_path field directly, clone the Option<String>
     let siren_config_path = Path::new(&tsunami_data_path).parent().unwrap_or_else(|| Path::new(".")).join("siren_config.json"); // Look for JSON
 
-    let dtm_path = config.dtm_path.clone().unwrap_or_default();
+    let dtm_path = config.dtm_file_path.clone().unwrap_or_default();
 
     println!("Using location: {}", config.location);
     println!("Grid path: {}", grid_path);
@@ -931,6 +931,8 @@ fn main() -> io::Result<()> {
         // We need to decide how to get tsunami_delay and agent_reaction_delay here.
         // For now, use some default values.
         let mut config = api::SimulationConfig::default(); // Load defaults (location, paths)
+        config.location = "pacitan".to_string(); // Set location to pacitan (lowercase) for CLI run
+        config.dtm_file_path = None; // Disable DTM for Pacitan CLI run as no specific DTM is available
         config.tsunami_delay = 100; // Example default
         config.max_steps = Some(1000); // Example max steps
 
