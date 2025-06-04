@@ -1,6 +1,6 @@
 use rand::prelude::*;
 use rand::distr::weighted::WeightedIndex;
-use rand::thread_rng; // Correct import location
+// use rand::thread_rng; // Correct import location - No longer needed directly
 use std::fmt;
 use serde::Serialize; // Import Serialize at the top level
 
@@ -69,8 +69,8 @@ impl Agent {
             agent_type,
             is_alive: true,
             // Use config ranges for random generation
-            knowledge_level: thread_rng().gen_range(config.knowledge_level_min..=config.knowledge_level_max),
-            household_size: thread_rng().gen_range(config.household_size_min..=config.household_size_max),
+            knowledge_level: rand::thread_rng().gen_range(config.knowledge_level_min..=config.knowledge_level_max), // Keep gen_range for now, fix if it's a hard error
+            household_size: rand::thread_rng().gen_range(config.household_size_min..=config.household_size_max), // Keep gen_range for now
             has_decided_to_evacuate: false,
             evacuation_trigger_time: None,
             is_in_shelter: false,
@@ -83,7 +83,7 @@ impl Agent {
 impl AgentType {
     pub fn random() -> Self {
         let weights = [6.21, 13.41, 59.10, 19.89]; // Distribusi bobot
-        let mut rng = thread_rng();
+        let mut rng = rand::thread_rng();
         let dist = WeightedIndex::new(&weights).unwrap();
         match dist.sample(&mut rng) {
             0 => AgentType::Child,
@@ -133,6 +133,7 @@ pub struct AgentOutcome {
     pub initial_household_size: u8, // Assuming we want the initial value
     pub final_status: AgentFinalStatus,
     pub final_step: u32, // Step of death or reaching shelter, or simulation end step
+    pub has_decided_to_evacuate: bool, // NEW: export evacuation decision flag
     pub moved_by_siren: bool, // Flag to indicate if the agent's evacuation decision was overridden by the siren
 }
 // --- End Structs and Enums for Outcome Logging ---

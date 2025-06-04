@@ -59,19 +59,19 @@ impl Default for SimulationConfig {
             output_path: "./output".to_string(), 
             max_steps: Some(5000), 
             dtm_file_path: None, 
-            siren_config_path: None,
+            siren_config_path: Some("./data_pacitan/tsunami_pacitan/siren_config.json".to_string()),
             use_dtm_for_cost: false, 
             tsunami_delay: 1800, 
             // Removed: agent_reaction_delay: 50,
             tsunami_speed_time: 30, // Default speed time
             data_collection_interval: 30, // Default collection interval
-            milling_time_min: 5, // Default min milling steps
-            milling_time_max: 20, // Default max milling steps
-            siren_effectiveness_probability: 0.8, // Default 80% chance to react to siren
+            milling_time_min: 60, // Default min milling steps
+            milling_time_max: 240, // Default max milling steps
+            siren_effectiveness_probability: 0.0, // Default 80% chance to react to siren
             knowledge_level_min: 10, // Default min knowledge
             knowledge_level_max: 90, // Default max knowledge
             household_size_min: 1, // Default min household size
-            household_size_max: 5, // Default max household size
+            household_size_max: 4, // Default max household size
         }
     }
 }
@@ -318,10 +318,11 @@ async fn init_simulation(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
 
     // Re-acquire lock and update state
     let mut app_state = data.lock().unwrap();
+    // Store loaded siren configuration in state
+    app_state.state.siren_config = loaded_siren_config.clone();
     app_state.model = Some(model); // Store the final model
     app_state.state.is_running = true; // Mark as running
     app_state.state.is_completed = false;
-    app_state.state.siren_config = loaded_siren_config; // Store loaded siren config in state
     let final_agent_count = app_state.model.as_ref().unwrap().agents.len();
     // Export stats after model is stored
     if let Err(e) = export_agent_statistics(&app_state.model.as_ref().unwrap().agents) { eprintln!("Warning: Failed to export agent statistics: {}", e); }
@@ -348,7 +349,7 @@ async fn run_step(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     // let siren_config = app_state.state.siren_config.clone();
 
     // Clone config before borrowing model mutably
-    let config_clone = app_state.config.clone();
+    let _config_clone = app_state.config.clone();
     // Extract necessary config values and siren_config from state
     let milling_min = app_state.config.milling_time_min;
     let milling_max = app_state.config.milling_time_max;
@@ -466,6 +467,7 @@ async fn run_step(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
                      initial_household_size: agent.household_size, // Note: This is current, not initial if modified
                      final_status,
                      final_step: current_step + 1,
+                     has_decided_to_evacuate: agent.has_decided_to_evacuate, // NEW: decision flag
                      moved_by_siren: agent.moved_by_siren, // Log the step *after* completion check
                  }
              }).collect();
@@ -517,7 +519,7 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
 
         let tsunami_index = app_state.state.tsunami_index;
         // Clone config before borrowing model mutably
-        let config_clone = app_state.config.clone();
+        let _config_clone = app_state.config.clone();
         // Extract necessary config values and siren_config from state
         let milling_min = app_state.config.milling_time_min;
         let milling_max = app_state.config.milling_time_max;
@@ -601,14 +603,14 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
         app_state.state.dead_agents = dead_agents_count; // Update cumulative dead count
 
         // Check for completion based on max_steps or end of tsunami data
-        let mut just_completed_multi = false; // Flag for multi-step run
+        let mut _just_completed_multi = false; // Flag for multi-step run
         if should_complete_simulation {
-            if !app_state.state.is_completed { just_completed_multi = true; }
+            if !app_state.state.is_completed { _just_completed_multi = true; }
             app_state.state.is_completed = true;
             app_state.state.is_running = false;
         } else if let Some(max_steps) = app_state.config.max_steps {
             if current_step + 1 >= max_steps {
-                if !app_state.state.is_completed { just_completed_multi = true; }
+                if !app_state.state.is_completed { _just_completed_multi = true; }
                 app_state.state.is_completed = true;
                 app_state.state.is_running = false;
                  println!("Reached max steps ({}) during run_steps at step {}.", max_steps, current_step);
@@ -617,7 +619,7 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
 
         // --- Populate Agent Outcomes on Completion (within loop) ---
         // REMOVED: Outcome logging moved outside the loop to avoid borrow issues
-        // if just_completed_multi { ... }
+        // if _just_completed_multi { ... }
         // --- End Populate Agent Outcomes ---
 
 
@@ -656,6 +658,7 @@ async fn run_steps(data: web::Data<Arc<Mutex<AppState>>>, steps_to_run: web::Pat
                     initial_household_size: agent.household_size,
                     final_status,
                     final_step, // Use the captured final step
+                    has_decided_to_evacuate: agent.has_decided_to_evacuate, // NEW: decision flag
                     moved_by_siren: agent.moved_by_siren, // Include the new field
                 }
             }).collect();
@@ -687,7 +690,7 @@ async fn export_results(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder
     if app_state.death_json_counter.is_empty() && app_state.shelter_json_counter.is_empty() { return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation not initialized or no steps run to export data"})); }
     let death_json_clone = app_state.death_json_counter.clone();
     let shelter_json_clone = app_state.shelter_json_counter.clone();
-    drop(app_state);
+    drop(app_state); // Release lock
     HttpResponse::Ok().json(json!({"status": "ok", "message": "Simulation results exported", "death_data": death_json_clone, "shelter_data": shelter_json_clone}))
 }
 
@@ -719,7 +722,6 @@ async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Res
     let grid = &model.grid;
     let current_step = app_state.state.current_step;
     let location = &app_state.config.location;
-    let config = app_state.config.clone();
     let epsg_code = match location.as_str() { "pacitan" | "sample" => "EPSG:32749", _ => "EPSG:32750" };
 
     // Create features for each individual agent
@@ -768,11 +770,10 @@ async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Res
     });
     
     // 3. Define output file path
-    let output_dir = Path::new(&config.output_path);
+    let output_path_string = app_state.config.output_path.clone();
+    drop(app_state); // Release lock before performing file I/O
+    let output_dir = Path::new(&output_path_string);
     let file_path = output_dir.join("agent_geojson.json");
-
-    // Release the lock before performing file I/O
-    drop(app_state);
 
     // Ensure output directory exists
     if let Err(e) = std::fs::create_dir_all(output_dir) {
@@ -823,29 +824,6 @@ async fn export_agent_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Res
 async fn export_grid_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     use serde_json::{json, Value};
     let app_state = data.lock().unwrap();
-// --- New Handler for Agent Outcomes ---
-#[get("/export/agent_outcomes")]
-async fn export_agent_outcomes(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
-    let app_state = data.lock().unwrap();
-    // Check if outcomes have been generated (i.e., simulation completed at least once)
-    if app_state.agent_outcomes.is_empty() {
-        // Return empty list or a specific message if simulation hasn't completed
-        return HttpResponse::Ok().json(json!({
-            "status": "ok",
-            "message": "No agent outcomes logged yet. Run a simulation to completion.",
-            "outcomes": []
-        }));
-    }
-    // Clone the outcomes and return
-    let outcomes_clone = app_state.agent_outcomes.clone();
-    drop(app_state); // Release lock
-    HttpResponse::Ok().json(json!({
-        "status": "ok",
-        "message": "Agent outcomes exported.",
-        "outcomes": outcomes_clone
-    }))
-}
-// --- End New Handler ---
     if app_state.model.is_none() { return HttpResponse::BadRequest().json(json!({"status": "error", "message": "Simulation not initialized (grid data unavailable)"})); }
 
     let model = app_state.model.as_ref().unwrap();
@@ -865,114 +843,6 @@ async fn export_agent_outcomes(data: web::Data<Arc<Mutex<AppState>>>) -> impl Re
                 Terrain::Blocked => None,
             };
             if let Some(f) = feature { features.push(f); }
-        }
-    }
-    let geojson = json!({"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": epsg_code}}, "features": features});
-    HttpResponse::Ok().content_type("application/geo+json").json(geojson)
-}
-
-// --- New Handler for Agent Outcomes ---
-#[get("/export/agent_outcomes")]
-async fn export_agent_outcomes(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
-    let app_state = data.lock().unwrap();
-
-    // 1. Retrieve config and outcomes
-    let config = app_state.config.clone();
-    let agent_outcomes = app_state.agent_outcomes.clone();
-
-    // Check if outcomes have been generated
-    if agent_outcomes.is_empty() {
-        return HttpResponse::Ok().json(json!({
-            "status": "ok",
-            "message": "No agent outcomes logged yet. Run a simulation to completion.",
-            "outcomes": []
-        }));
-    }
-
-    // 2. Create JSON object
-    let output_data = json!({
-        "simulation_config": config,
-        "agent_outcomes": agent_outcomes
-    });
-
-    // 3. Define output file path
-    let output_dir = Path::new(&config.output_path);
-    let file_path = output_dir.join("agent_outcomes.json");
-
-    // Release the lock before performing file I/O
-    drop(app_state);
-
-    // Ensure output directory exists
-    if let Err(e) = std::fs::create_dir_all(output_dir) {
-        eprintln!("Error creating output directory {:?}: {}", output_dir, e);
-        return HttpResponse::InternalServerError().json(json!({
-            "status": "error",
-            "message": format!("Failed to create output directory: {}", e)
-        }));
-    }
-
-    // 4. Write JSON object to file
-    match serde_json::to_string_pretty(&output_data) {
-        Ok(json_string) => {
-            match std::fs::write(&file_path, json_string) {
-                Ok(_) => {
-                    println!("Agent outcomes successfully exported to {:?}", file_path);
-                    // 5. Return success response
-                    HttpResponse::Ok().json(json!({
-                        "status": "ok",
-                        "message": format!("Agent outcomes exported successfully to {:?}", file_path),
-                        "file_path": file_path.to_string_lossy()
-                    }))
-                }
-                Err(e) => {
-                    eprintln!("Error writing agent outcomes to file {:?}: {}", file_path, e);
-                    // 6. Return error response
-                    HttpResponse::InternalServerError().json(json!({
-                        "status": "error",
-                        "message": format!("Failed to write agent outcomes to file: {}", e)
-                    }))
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error serializing agent outcomes to JSON: {}", e);
-            // 6. Return error response
-            HttpResponse::InternalServerError().json(json!({
-                "status": "error",
-                "message": format!("Failed to serialize agent outcomes to JSON: {}", e)
-            }))
-        }
-    }
-}
-// --- End New Handler ---
-
-#[get("/tsunami/geojson")]
-async fn export_tsunami_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
-    use serde_json::{json, Value};
-    let app_state = data.lock().unwrap();
-    if app_state.model.is_none() { return HttpResponse::Ok().json(json!({"type": "FeatureCollection", "features": []})); } // Return empty if not initialized
-
-    let model = app_state.model.as_ref().unwrap();
-    let grid = &model.grid;
-    let state = &app_state.state;
-    let location = &app_state.config.location;
-    let epsg_code = match location.as_str() { "pacitan" | "sample" => "EPSG:32749", _ => "EPSG:32750" };
-    let mut features: Vec<Value> = Vec::new();
-
-    if state.is_tsunami && state.tsunami_index < grid.tsunami_data.len() {
-        let current_tsunami_frame = &grid.tsunami_data[state.tsunami_index];
-        for y in 0..grid.height {
-            for x in 0..grid.width {
-                if let Some(row) = current_tsunami_frame.get(y as usize) {
-                    if let Some(&height) = row.get(x as usize) {
-                        if height > 0 {
-                            let x_utm = grid.xllcorner + (x as f64 * grid.cellsize);
-                            let y_utm = grid.yllcorner + ((grid.height - 1 - y) as f64 * grid.cellsize);
-                            features.push(json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [x_utm, y_utm]}, "properties": {"type": "tsunami", "height": height}}));
-                        }
-                    } else { eprintln!("Warning: Tsunami frame index out of bounds at x={}", x); }
-                } else { eprintln!("Warning: Tsunami frame index out of bounds at y={}", y); }
-            }
         }
     }
     let geojson = json!({"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": epsg_code}}, "features": features});
@@ -1025,6 +895,71 @@ async fn get_agent_info(
 }
 // --- End New Handler ---
 
+// --- New Handler for Agent Outcomes ---
+#[get("/export/agent_outcomes")]
+async fn export_agent_outcomes(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
+    let app_state = data.lock().unwrap();
+    let config = app_state.config.clone();
+    let outcomes = app_state.agent_outcomes.clone();
+    if outcomes.is_empty() {
+        return HttpResponse::Ok().json(json!({
+            "status": "ok",
+            "message": "No agent outcomes logged yet. Run a simulation to completion.",
+            "simulation_config": config,
+            "agent_outcomes": outcomes
+        }));
+    }
+    HttpResponse::Ok().json(json!({
+        "simulation_config": config,
+        "agent_outcomes": outcomes
+    }))
+}
+// --- End New Handler ---
+
+// --- New Handler for Tsunami GeoJSON ---
+#[get("/tsunami/geojson")]
+async fn export_tsunami_geojson(data: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
+    let app_state = data.lock().unwrap();
+    if app_state.model.is_none() {
+        return HttpResponse::Ok().json(json!({"type": "FeatureCollection", "features": []}));
+    }
+    let model = app_state.model.as_ref().unwrap();
+    let grid = &model.grid;
+    let state = &app_state.state;
+    let location = &app_state.config.location;
+    let epsg_code = match location.as_str() {
+        "pacitan" | "sample" => "EPSG:32749",
+        _ => "EPSG:32750",
+    };
+    let mut features: Vec<serde_json::Value> = Vec::new();
+    if state.is_tsunami && (state.tsunami_index as usize) < grid.tsunami_data.len() {
+        let frame = &grid.tsunami_data[state.tsunami_index as usize];
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                if let Some(row) = frame.get(y as usize) {
+                    if let Some(&height) = row.get(x as usize) {
+                        if height > 0 {
+                            let x_utm = grid.xllcorner + (x as f64 * grid.cellsize);
+                            let y_utm = grid.yllcorner + ((grid.height - 1 - y) as f64 * grid.cellsize);
+                            features.push(json!({
+                                "type": "Feature",
+                                "geometry": {"type": "Point", "coordinates": [x_utm, y_utm]},
+                                "properties": {"type": "tsunami", "height": height}
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let geojson = json!({
+        "type": "FeatureCollection",
+        "crs": {"type": "name", "properties": {"name": epsg_code}},
+        "features": features
+    });
+    HttpResponse::Ok().content_type("application/geo+json").json(geojson)
+}
+// --- End New Handler ---
 
 // --- Server Setup ---
 pub async fn start_api_server(port: u16) -> std::io::Result<()> {

@@ -1,6 +1,6 @@
 mod game;
 mod api;
-use crate::api::SirenConfig; // Import SirenConfig from api module
+ // Import SirenConfig from api module
 
 
 use game::agent::{/* Removed Agent */ AgentType};
@@ -102,6 +102,12 @@ pub fn export_agent_statistics(agents: &Vec<crate::game::agent::Agent>) -> std::
 }
 
 pub const DISTRIBUTION_WEIGHTS: [i32; 5] = [10, 20, 30, 15, 20];
+
+// ategori	Persentase 2020	Persentase 2010
+// Anak-anak (5-14 thn)	12,95%	16,52%
+// Remaja (15-19 thn)	6,95%	7,55%
+// Dewasa (20-59 thn)	59,93%	58,63%
+// Lansia (60+ thn)	20,17%	17,30%
 
 /* // Function to write grid state - kept for potential debugging, but not essential for core logic
 fn write_grid_to_ascii(filename: &str, model: &Model) -> std::io::Result<()> {

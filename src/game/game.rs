@@ -3,7 +3,7 @@ use super::grid::{Grid, Terrain};
 // Removed: use crate::ShelterData;
 // Removed: use crate::SimulationData;
 use rand::prelude::*; // Import Rng trait for gen_bool, etc.
-use rand::thread_rng; // Import thread_rng function
+// use rand::thread_rng; // Import thread_rng function - No longer needed directly
 use rand::seq::SliceRandom;
 use rayon::prelude::*; // Import Rayon prelude
 // Removed: use serde_json::json;
@@ -108,7 +108,7 @@ impl Model {
         // --- Trigger, Milling, and Decision Logic (agent_reaction_delay removed) ---
         // Parallelize agent decision-making
         self.agents.par_iter_mut().for_each(|agent| { // Changed to for_each, closure takes |agent|
-            let mut rng = thread_rng(); // RNG initialized per thread/task
+            let mut rng = rand::thread_rng(); // RNG initialized per thread/task
             if !agent.is_alive { return; } // Skip dead agents (Rayon's for_each uses return like continue)
 
             // Trigger: Mark when agent *could* start reacting (if not already triggered)
@@ -163,16 +163,17 @@ impl Model {
             }
 
             // Decision: Decide once, only after milling time is over and if not already decided by siren
-            if agent.evacuation_trigger_time.is_some() && 
-               agent.milling_steps_remaining == 0 && 
-               !agent.has_decided_to_evacuate {
-                let knowledge_factor = agent.knowledge_level as f32 / 100.0;
-                let household_factor = 1.0 - ((agent.household_size.saturating_sub(1)) as f32 * 0.05);
-                let evacuation_probability = (knowledge_factor * household_factor).clamp(0.0, 1.0);
-
+            if agent.evacuation_trigger_time.is_some()
+               && agent.milling_steps_remaining == 0
+               && !agent.has_decided_to_evacuate {
+                // Logistic model from Paris flood study: P = 1/(1+exp(-(α0 + α1*K + α2*(H-1))))
+                let k = agent.knowledge_level as f64;
+                let h = agent.household_size as f64;
+                let logit = -1.87 + 0.037 * k - 0.228 * (h - 1.0);
+                let evacuation_probability = (1.0 / (1.0 + (-logit).exp())) as f32;
+                
                 if rng.gen_bool(evacuation_probability as f64) {
                     agent.has_decided_to_evacuate = true;
-                    // println!("Agent {} decided to evacuate (Prob: {:.2})", agent.id, evacuation_probability); // Debug
                 } else {
                     // Agent decided NOT to evacuate initially
                     // println!("Agent {} decided NOT to evacuate initially (Prob: {:.2})", agent.id, evacuation_probability); // Debug
@@ -181,7 +182,7 @@ impl Model {
         });
         // --- End Trigger, Milling, and Decision Logic ---
 
-        let mut rng = thread_rng(); // Add RNG for the sequential movement loop
+        let mut rng = rand::thread_rng(); // Add RNG for the sequential movement loop
 
         let mut agent_order: Vec<usize> = (0..self.agents.len()).collect();
 
@@ -349,7 +350,7 @@ impl Model {
         agent: &Agent,
         reserved: &HashSet<(u32, u32)>,
     ) -> Option<(u32, u32, bool)> {
-        let mut rng = thread_rng(); // Keep using imported thread_rng
+        let mut rng = rand::thread_rng(); // Keep using imported thread_rng
         let dirs = [ (0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1) ];
         const SQRT2: f64 = 1.41421356237;
         // Removed UPHILL_INCENTIVE_FACTOR as it was causing incoherence.
