@@ -50,16 +50,16 @@ pub struct SimulationConfig {
 
 impl Default for SimulationConfig {
     fn default() -> Self {
-        // Defaulting to Pacitan configuration via location field
+        // Defaulting to Sample configuration via location field
         SimulationConfig {
-            location: "pacitan".to_string(),
+            location: "sample".to_string(),
             grid_file_path: None,
             agent_file_path: None,
             tsunami_data_path: None,
             output_path: "./output".to_string(), 
             max_steps: Some(5000), 
             dtm_file_path: None, 
-            siren_config_path: Some("./data_pacitan/tsunami_pacitan/siren_config.json".to_string()),
+            siren_config_path: None, // No siren config for sample data
             use_dtm_for_cost: false, 
             tsunami_delay: 1800, 
             // Removed: agent_reaction_delay: 50,

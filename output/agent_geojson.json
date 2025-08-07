@@ -5,13 +5,434 @@
     },
     "type": "name"
   },
-  "features": [],
+  "features": [
+    {
+      "geometry": {
+        "coordinates": [
+          500340.0,
+          9100470.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": false,
+        "household_size": 2,
+        "id": 1,
+        "is_in_shelter": false,
+        "knowledge_level": 23,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500460.0,
+          9100450.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Teen",
+        "has_decided_to_evacuate": false,
+        "household_size": 4,
+        "id": 2,
+        "is_in_shelter": false,
+        "knowledge_level": 33,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500320.0,
+          9100430.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": false,
+        "household_size": 4,
+        "id": 4,
+        "is_in_shelter": false,
+        "knowledge_level": 12,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500320.0,
+          9100370.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Child",
+        "has_decided_to_evacuate": true,
+        "household_size": 3,
+        "id": 5,
+        "is_in_shelter": false,
+        "knowledge_level": 81,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500290.0,
+          9100370.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": true,
+        "household_size": 4,
+        "id": 6,
+        "is_in_shelter": false,
+        "knowledge_level": 76,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500390.0,
+          9100340.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": false,
+        "household_size": 3,
+        "id": 7,
+        "is_in_shelter": false,
+        "knowledge_level": 11,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500240.0,
+          9100020.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": true,
+        "household_size": 3,
+        "id": 12,
+        "is_in_shelter": true,
+        "knowledge_level": 26,
+        "moved_by_siren": true,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500240.0,
+          9100020.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": true,
+        "household_size": 2,
+        "id": 13,
+        "is_in_shelter": true,
+        "knowledge_level": 59,
+        "moved_by_siren": true,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500240.0,
+          9100020.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Teen",
+        "has_decided_to_evacuate": true,
+        "household_size": 2,
+        "id": 15,
+        "is_in_shelter": true,
+        "knowledge_level": 78,
+        "moved_by_siren": true,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500380.0,
+          9100190.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": false,
+        "household_size": 3,
+        "id": 16,
+        "is_in_shelter": false,
+        "knowledge_level": 82,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500470.0,
+          9100190.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": false,
+        "household_size": 1,
+        "id": 17,
+        "is_in_shelter": false,
+        "knowledge_level": 47,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500240.0,
+          9100020.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": true,
+        "household_size": 1,
+        "id": 18,
+        "is_in_shelter": true,
+        "knowledge_level": 42,
+        "moved_by_siren": true,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500430.0,
+          9100150.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": false,
+        "household_size": 3,
+        "id": 19,
+        "is_in_shelter": false,
+        "knowledge_level": 67,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500390.0,
+          9100100.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": false,
+        "household_size": 3,
+        "id": 21,
+        "is_in_shelter": false,
+        "knowledge_level": 38,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500290.0,
+          9100090.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": false,
+        "household_size": 1,
+        "id": 22,
+        "is_in_shelter": false,
+        "knowledge_level": 74,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500470.0,
+          9100090.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": false,
+        "household_size": 3,
+        "id": 23,
+        "is_in_shelter": false,
+        "knowledge_level": 19,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500400.0,
+          9100050.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": false,
+        "household_size": 1,
+        "id": 24,
+        "is_in_shelter": false,
+        "knowledge_level": 51,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500130.0,
+          9100000.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": true,
+        "household_size": 1,
+        "id": 25,
+        "is_in_shelter": false,
+        "knowledge_level": 27,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500440.0,
+          9100040.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Elder",
+        "has_decided_to_evacuate": false,
+        "household_size": 1,
+        "id": 26,
+        "is_in_shelter": false,
+        "knowledge_level": 41,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500300.0,
+          9100030.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": false,
+        "household_size": 2,
+        "id": 27,
+        "is_in_shelter": false,
+        "knowledge_level": 37,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          500010.0,
+          9100010.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "agent_type": "Adult",
+        "has_decided_to_evacuate": false,
+        "household_size": 3,
+        "id": 28,
+        "is_in_shelter": false,
+        "knowledge_level": 25,
+        "moved_by_siren": false,
+        "timestamp": 100
+      },
+      "type": "Feature"
+    }
+  ],
   "metadata": {
     "grid_cellsize": 10.0,
-    "grid_height": 20,
-    "grid_width": 20,
-    "location": "pacitan",
-    "simulation_step": 340
+    "grid_height": 50,
+    "grid_width": 50,
+    "location": "sample",
+    "simulation_step": 100
   },
   "type": "FeatureCollection"
 }
